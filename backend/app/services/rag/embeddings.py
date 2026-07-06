@@ -1,0 +1,50 @@
+
+from abc import ABC, abstractmethod
+
+from app.services.rag.config import RAGSettings
+from app.services.rag.models import Document
+
+
+def _chunk_texts(document: Document) -> list[str]:
+    return [doc.chunk_content if doc.chunk_content else "" for doc in (document.chunked_pages or [])]
+
+
+class BaseEmbeddingProvider(ABC):
+    @abstractmethod
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        pass
+
+    @abstractmethod
+    def embed_document(self, document: Document) -> list[list[float]]:
+        pass
+
+    @abstractmethod
+    def warmup(self) -> None:
+        """Ensures the model is loaded and ready for inference."""
+        pass
+
+class EmbeddingService:
+    def __init__(self, settings: RAGSettings):
+        config = settings.embeddings_config
+        self.expected_dim = config.dim
+
+    def embed_query(self, query: str) -> list[float]:
+        result = self.provider.embed_queries([query])[0]
+        if len(result) != self.expected_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {self.expected_dim}, "
+                f"got {len(result)}. Check your embedding model configuration."
+            )
+        return result
+
+    def embed_document(self, document: Document) -> list[list[float]]:
+        results = self.provider.embed_document(document)
+        if results and len(results[0]) != self.expected_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {self.expected_dim}, "
+                f"got {len(results[0])}. Check your embedding model configuration."
+            )
+        return results
+
+    def warmup(self) -> None:
+        self.provider.warmup()
