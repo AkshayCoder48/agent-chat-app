@@ -33,6 +33,7 @@
   "nav": {
     "dashboard": "Panel",
     "chat": "Czat",
+    "settings": "Ustawienia",
     "knowledge": "Wiedza",
     "knowledgeBases": "Bazy wiedzy",
     "knowledgeBasesDesc": "Dokumenty i kolekcje",

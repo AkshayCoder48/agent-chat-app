@@ -12,6 +12,7 @@ from app.api.routes.v1 import agent
 from app.api.routes.v1 import rag
 from app.api.routes.v1 import files
 from app.api.routes.v1 import me_slash_commands
+from app.api.routes.v1 import ai_providers
 from app.api.routes.v1 import admin_stats
 
 v1_router = APIRouter()
@@ -37,5 +38,8 @@ v1_router.include_router(admin_conversations.router, prefix="/admin/conversation
 v1_router.include_router(admin_users.router, prefix="/admin/users", tags=["admin:users"])
 v1_router.include_router(
     me_slash_commands.router, prefix="/me/slash-commands", tags=["me:slash-commands"]
+)
+v1_router.include_router(
+    ai_providers.router, prefix="/ai-providers", tags=["ai-providers"]
 )
 v1_router.include_router(admin_stats.router, prefix="/admin", tags=["admin:stats"])

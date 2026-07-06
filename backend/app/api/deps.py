@@ -363,6 +363,14 @@ def get_user_slash_command_service(db: DBSession) -> UserSlashCommandService:
 UserSlashCommandSvc = Annotated[
     UserSlashCommandService, Depends(get_user_slash_command_service)
 ]
+from app.services.ai_provider import AIProviderService
+
+
+def get_ai_provider_service(db: DBSession) -> AIProviderService:
+    return AIProviderService(db)
+
+
+AIProviderSvc = Annotated[AIProviderService, Depends(get_ai_provider_service)]
 from app.services.admin import AdminService
 
 

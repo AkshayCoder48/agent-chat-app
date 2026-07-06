@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Bell, Palette, Shield, Slash, UserCircle } from "lucide-react";
+import { Blocks, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
 
 import { ROUTES } from "@/lib/constants";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -10,8 +10,11 @@ import { PageTabs, type PageTab } from "@/components/dashboard/page-tabs";
 const SETTINGS_TABS: PageTab[] = [
   { label: "Profile", href: ROUTES.SETTINGS_PROFILE, icon: UserCircle },
   { label: "Account", href: ROUTES.SETTINGS_ACCOUNT, icon: Shield },
+  { label: "Config", href: ROUTES.SETTINGS_CONFIG, icon: Settings },
   { label: "Slash commands", href: ROUTES.SETTINGS_SLASH_COMMANDS, icon: Slash },
-  { label: "Notifications", href: ROUTES.SETTINGS_NOTIFICATIONS, icon: Bell },
+  { label: "Skills", href: ROUTES.SETTINGS_SKILLS, icon: Wrench },
+  { label: "MCPs", href: ROUTES.SETTINGS_MCPS, icon: Blocks },
+  { label: "Plugins", href: ROUTES.SETTINGS_PLUGINS, icon: Blocks },
   { label: "Appearance", href: ROUTES.SETTINGS_APPEARANCE, icon: Palette },
 ];
 
@@ -21,7 +24,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <PageHeader
         eyebrow="Settings"
         title="Settings"
-        description="Manage your account, appearance, notifications, and slash commands."
+        description="Manage your account, config, slash commands, skills, MCPs, plugins, and appearance."
       />
       <PageTabs tabs={SETTINGS_TABS} />
       <div className="min-w-0">{children}</div>

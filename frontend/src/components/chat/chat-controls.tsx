@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Check, ChevronDown, Cpu, Settings2, Sliders } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -11,10 +12,21 @@ import { cn } from "@/lib/utils";
 type ThinkingEffort = "off" | "low" | "medium" | "high";
 type Tab = "model" | "settings";
 
+interface CustomProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  has_api_key: boolean;
+  models: string[];
+}
+
 interface ChatControlsProps {
   onModelChange?: (model: string | null) => void;
   onTemperatureChange?: (value: number | null) => void;
   onThinkingEffortChange?: (value: "low" | "medium" | "high" | null) => void;
+  // When the user picks a model from a custom provider, we pass the provider too
+  // so the chat layer can route the request to the right base_url with the right key.
+  onProviderSelect?: (provider: CustomProvider | null) => void;
 }
 
 const EFFORT_OPTIONS: { label: string; value: ThinkingEffort; hint: string }[] = [
@@ -33,6 +45,7 @@ export function ChatControls({
   onModelChange,
   onTemperatureChange,
   onThinkingEffortChange,
+  onProviderSelect,
 }: ChatControlsProps) {
   const [tab, setTab] = useState<Tab>("model");
   const { currentConversationId } = useConversationStore();
@@ -40,10 +53,12 @@ export function ChatControls({
   const [availableModels, setAvailableModels] = useState<{ value: string; label: string }[]>([
     { value: "", label: "Default" },
   ]);
+  const [providers, setProviders] = useState<CustomProvider[]>([]);
   const [selectedModel, setSelectedModel] = useState<{ value: string; label: string }>({
     value: "",
     label: "Default",
   });
+  const [selectedProvider, setSelectedProvider] = useState<CustomProvider | null>(null);
 
   useEffect(() => {
     // Fetch model list once on mount. `onModelChange` is intentionally NOT in
@@ -52,6 +67,7 @@ export function ChatControls({
     fetch("/api/v1/agent/models", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
+        if (!data) return;
         if (data?.models) {
           const models = [
             { value: "", label: `Default (${data.default})` },
@@ -59,6 +75,9 @@ export function ChatControls({
           ];
           setAvailableModels(models);
           setSelectedModel(models[0]);
+        }
+        if (data?.providers) {
+          setProviders(data.providers);
         }
       })
       .catch(() => {});
@@ -125,10 +144,20 @@ export function ChatControls({
           {tab === "model" && (
             <ModelPanel
               models={availableModels}
+              providers={providers}
               selected={selectedModel}
-              onPick={(m) => {
+              selectedProvider={selectedProvider}
+              onPickDefault={(m) => {
                 setSelectedModel(m);
+                setSelectedProvider(null);
+                onProviderSelect?.(null);
                 onModelChange?.(m.value || null);
+              }}
+              onPickProviderModel={(p, modelId) => {
+                setSelectedModel({ value: `${p.id}::${modelId}`, label: `${p.name} · ${modelId}` });
+                setSelectedProvider(p);
+                onProviderSelect?.(p);
+                onModelChange?.(modelId);
               }}
             />
           )}
@@ -194,41 +223,105 @@ function TabButton({
 /** Model picker panel. */
 function ModelPanel({
   models,
+  providers,
   selected,
-  onPick,
+  selectedProvider,
+  onPickDefault,
+  onPickProviderModel,
 }: {
   models: { value: string; label: string }[];
+  providers: CustomProvider[];
   selected: { value: string; label: string };
-  onPick: (m: { value: string; label: string }) => void;
+  selectedProvider: CustomProvider | null;
+  onPickDefault: (m: { value: string; label: string }) => void;
+  onPickProviderModel: (p: CustomProvider, modelId: string) => void;
 }) {
   return (
     <div>
       <p className="text-foreground mb-1 text-sm font-semibold">Model</p>
       <p className="text-foreground/55 mb-4 text-xs leading-relaxed">
-        Pick the model that handles this conversation.
+        Pick the model that handles this conversation. Add more in Settings → Config.
       </p>
-      <ul className="space-y-1">
-        {models.map((m) => {
-          const isActive = selected.value === m.value;
-          return (
-            <li key={m.value || "default"}>
-              <button
-                type="button"
-                onClick={() => onPick(m)}
-                className={cn(
-                  "flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs transition-all",
-                  isActive
-                    ? "border-foreground/30 bg-accent text-foreground"
-                    : "border-border text-foreground/75 hover:border-foreground/25 hover:bg-accent/60 hover:text-foreground",
+
+      {/* Default / built-in models */}
+      {models.length > 0 && (
+        <ul className="space-y-1 mb-4">
+          {models.map((m) => {
+            const isActive = !selectedProvider && selected.value === m.value;
+            return (
+              <li key={m.value || "default"}>
+                <button
+                  type="button"
+                  onClick={() => onPickDefault(m)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs transition-all",
+                    isActive
+                      ? "border-foreground/30 bg-accent text-foreground"
+                      : "border-border text-foreground/75 hover:border-foreground/25 hover:bg-accent/60 hover:text-foreground",
+                  )}
+                >
+                  <span className="truncate font-medium">{m.label}</span>
+                  {isActive && <Check className="text-foreground h-3.5 w-3.5 shrink-0" />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* User-configured custom providers */}
+      {providers.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-foreground/55 font-mono text-[10px] tracking-wider uppercase">
+            Your providers
+          </p>
+          {providers.map((p) => (
+            <div key={p.id} className="space-y-1">
+              <div className="flex items-center gap-1.5 px-1">
+                <span className="text-foreground text-xs font-semibold truncate">{p.name}</span>
+                {!p.has_api_key && (
+                  <span className="text-amber-500 text-[10px]">no key</span>
                 )}
-              >
-                <span className="truncate font-medium">{m.label}</span>
-                {isActive && <Check className="text-foreground h-3.5 w-3.5 shrink-0" />}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+                <span className="text-foreground/40 text-[10px] truncate ml-auto">{p.base_url}</span>
+              </div>
+              {p.models.length === 0 ? (
+                <p className="px-3 text-[11px] text-foreground/45 italic">No models — add some in Config.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {p.models.map((modelId) => {
+                    const value = `${p.id}::${modelId}`;
+                    const isActive = selected.value === value;
+                    return (
+                      <li key={value}>
+                        <button
+                          type="button"
+                          onClick={() => onPickProviderModel(p, modelId)}
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs transition-all",
+                            isActive
+                              ? "border-foreground/30 bg-accent text-foreground"
+                              : "border-border text-foreground/75 hover:border-foreground/25 hover:bg-accent/60 hover:text-foreground",
+                          )}
+                        >
+                          <span className="truncate font-mono">{modelId}</span>
+                          {isActive && <Check className="text-foreground h-3.5 w-3.5 shrink-0" />}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {models.length === 0 && providers.length === 0 && (
+        <p className="text-foreground/55 text-xs">
+          No models available. Add an AI provider in{" "}
+          <Link href="/settings/config" className="underline">Settings → Config</Link>.
+        </p>
+      )}
     </div>
   );
 }

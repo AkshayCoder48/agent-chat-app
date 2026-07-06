@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { cn, isAppAdmin } from "@/lib/utils";
 import { APP_NAME, ROUTES } from "@/lib/constants";
-import { LayoutDashboard, MessageSquare, UserCircle, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, MessageSquare, UserCircle, ShieldAlert, Settings } from "lucide-react";
 import { useSidebarStore, useAuthStore } from "@/stores";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui";
 
@@ -13,6 +13,7 @@ const navigation = [
   { nameKey: "dashboard", href: ROUTES.DASHBOARD, icon: LayoutDashboard },
   { nameKey: "chat", href: ROUTES.CHAT, icon: MessageSquare },
   { nameKey: "profile", href: ROUTES.PROFILE, icon: UserCircle },
+  { nameKey: "settings", href: ROUTES.SETTINGS, icon: Settings },
 ];
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, Palette, Shield, Slash, UserCircle } from "lucide-react";
+import { Blocks, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -29,16 +29,34 @@ const ITEMS: NavItem[] = [
     description: "Password, two-factor, danger zone",
   },
   {
+    label: "Config",
+    href: ROUTES.SETTINGS_CONFIG,
+    icon: Settings,
+    description: "AI providers, API keys, sandbox",
+  },
+  {
     label: "Slash commands",
     href: ROUTES.SETTINGS_SLASH_COMMANDS,
     icon: Slash,
     description: "Custom shortcuts + built-in toggles",
   },
   {
-    label: "Notifications",
-    href: ROUTES.SETTINGS_NOTIFICATIONS,
-    icon: Bell,
-    description: "What we email you about",
+    label: "Skills",
+    href: ROUTES.SETTINGS_SKILLS,
+    icon: Wrench,
+    description: "Built-in and uploaded AI skills",
+  },
+  {
+    label: "MCPs",
+    href: ROUTES.SETTINGS_MCPS,
+    icon: Blocks,
+    description: "Model Context Protocol servers",
+  },
+  {
+    label: "Plugins",
+    href: ROUTES.SETTINGS_PLUGINS,
+    icon: Blocks,
+    description: "Catalog-installed plugins",
   },
   {
     label: "Appearance",

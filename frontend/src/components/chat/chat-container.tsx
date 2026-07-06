@@ -10,7 +10,8 @@ import { FilePreviewPanel } from "./file-preview-panel";
 import { SourcesPanel } from "./sources-panel";
 import { MessageList } from "./message-list";
 import { PendingMessages } from "./pending-messages";
-import { ResearchPanel } from "./research-panel";
+// ResearchPanel import removed — deep research is disabled in this build.
+// Re-enable when enable_deep_research is turned on.
 import { ToolApprovalDialog } from "./tool-approval-dialog";
 import { QuestionPrompt } from "@/components/ui";
 import type { PendingApproval, AskUserQuestion, AskUserAnswer, Decision } from "@/types";

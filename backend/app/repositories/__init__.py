@@ -16,6 +16,8 @@ from app.repositories import message_rating as message_rating_repo
 
 from app.repositories import user_slash_command as user_slash_command_repo
 
+from app.repositories import ai_provider as ai_provider_repo
+
 __all__ = [
     "user_repo",
     "conversation_repo",
@@ -26,4 +28,5 @@ __all__ = [
     "conversation_share_repo",
     "message_rating_repo",
     "user_slash_command_repo",
+    "ai_provider_repo",
 ]

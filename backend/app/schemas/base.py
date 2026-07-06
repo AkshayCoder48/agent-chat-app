@@ -60,6 +60,9 @@ class ErrorResponse(BaseModel):
 class AgentModelsResponse(BaseModel):
     default: str
     models: list[str]
+    # User-configured custom providers and their model IDs, grouped per provider.
+    # Each entry: { "id": "<uuid>", "name": "OpenAI", "base_url": "https://…", "models": ["gpt-4o", …] }
+    providers: list[dict[str, Any]] = []
 
 
 class HealthResponse(BaseModel):
