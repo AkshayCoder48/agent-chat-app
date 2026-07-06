@@ -46,6 +46,7 @@ export function ChatContainer() {
     cancelQueued,
     clearQueued,
     setModel,
+    setProviderId,
     setTemperature,
     setThinkingEffort,
     pendingApproval,
@@ -88,6 +89,9 @@ export function ChatContainer() {
       // typed in the previous conversation's context, sending them into a
       // different conversation would surprise the user.
       clearQueued();
+      // Reset model + provider selection so it doesn't leak into the new chat.
+      setModel(null);
+      setProviderId(null);
     }
 
     prevConversationIdRef.current = currId;
@@ -206,6 +210,7 @@ export function ChatContainer() {
       }
       sendMessage={sendMessage}
       onModelChange={setModel}
+      onProviderChange={setProviderId}
       onTemperatureChange={setTemperature}
       onThinkingEffortChange={setThinkingEffort}
       onRegenerate={handleRegenerate}
@@ -236,6 +241,7 @@ interface ChatUIProps {
     files?: import("@/types").ChatMessageFile[],
   ) => void;
   onModelChange?: (model: string | null) => void;
+  onProviderChange?: (providerId: string | null) => void;
   onTemperatureChange?: (temperature: number | null) => void;
   onThinkingEffortChange?: (effort: "low" | "medium" | "high" | null) => void;
   onRegenerate?: (messageId: string) => void;
@@ -259,6 +265,7 @@ function ChatUI({
   isLoadingConversation,
   sendMessage,
   onModelChange,
+  onProviderChange,
   onTemperatureChange,
   onThinkingEffortChange,
   onRegenerate,
@@ -347,6 +354,7 @@ function ChatUI({
               <div className="flex items-center gap-1">
                 <ChatControls
                   onModelChange={onModelChange}
+                  onProviderSelect={(p) => onProviderChange?.(p ? p.id : null)}
                   onTemperatureChange={onTemperatureChange}
                   onThinkingEffortChange={onThinkingEffortChange}
                 />

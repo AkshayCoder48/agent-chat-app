@@ -64,7 +64,7 @@ function TextBubble({
       {isUser ? (
         <p className="text-sm break-words whitespace-pre-wrap">{text}</p>
       ) : (
-        <div className="prose-sm max-w-none text-sm">
+        <div className={cn("prose-sm max-w-none text-sm", showCursor && "stream-fade")}>
           <MarkdownContent content={text} onCiteClick={onCiteClick} />
           {showCursor && (
             <span className="ml-1 inline-block h-4 w-1.5 animate-pulse rounded-full bg-current" />

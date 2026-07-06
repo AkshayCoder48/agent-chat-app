@@ -24,9 +24,15 @@ manager = AgentConnectionManager()
 
 @router.get("/agent/models", response_model=AgentModelsResponse)
 async def list_models(user: CurrentUser, db: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
-    """Return available LLM models, the current default, and the user's
-    custom-configured AI providers (so the frontend can populate the chat
-    model picker with provider-grouped models).
+    """Return the current default model and the user's custom-configured AI
+    providers (so the frontend can populate the chat model picker with
+    provider-grouped models).
+
+    Note: we intentionally do NOT return the server's built-in
+    ``AI_AVAILABLE_MODELS`` list — the chat picker should show only models
+    the user has explicitly added via Settings → Config. The default model
+    name is still returned so the picker can label the "use server default"
+    option.
     """
     providers_raw, _ = await ai_provider_repo.list_for_user(
         db, user_id=user.id, active_only=True
@@ -43,7 +49,7 @@ async def list_models(user: CurrentUser, db: AsyncSession = Depends(get_db_sessi
     ]
     return {
         "default": settings.AI_MODEL,
-        "models": settings.AI_AVAILABLE_MODELS,
+        "models": [],
         "providers": providers,
     }
 

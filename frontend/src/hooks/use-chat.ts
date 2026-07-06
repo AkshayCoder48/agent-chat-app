@@ -64,6 +64,7 @@ export function useChat(options: UseChatOptions = {}) {
   const messageQueueRef = useRef<QueuedMessage[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const modelRef = useRef<string | null>(null);
+  const providerIdRef = useRef<string | null>(null);
   const temperatureRef = useRef<number | null>(null);
   const thinkingEffortRef = useRef<"low" | "medium" | "high" | null>(null);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
@@ -413,6 +414,7 @@ export function useChat(options: UseChatOptions = {}) {
       };
       if (fileIds?.length) payload.file_ids = fileIds;
       if (modelRef.current) payload.model = modelRef.current;
+      if (providerIdRef.current) payload.provider_id = providerIdRef.current;
       if (temperatureRef.current !== null) payload.temperature = temperatureRef.current;
       if (thinkingEffortRef.current !== null) payload.thinking_effort = thinkingEffortRef.current;
       sendMessage(payload);
@@ -537,6 +539,9 @@ export function useChat(options: UseChatOptions = {}) {
     clearQueued,
     setModel: (model: string | null) => {
       modelRef.current = model;
+    },
+    setProviderId: (providerId: string | null) => {
+      providerIdRef.current = providerId;
     },
     setTemperature: (temperature: number | null) => {
       temperatureRef.current = temperature;

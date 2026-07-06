@@ -36,6 +36,7 @@ from app.db.models.user import User
 from app.api.deps import get_conversation_service
 from app.db.session import get_db_context
 from app.services.file_storage import get_file_storage
+from app.repositories import ai_provider_repo
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,13 @@ class AgentSession:
         self.websocket = websocket
         self.user = user
         self.conversation_history: list[dict[str, str]] = []
-        self.deps = Deps()
+        # Inject the user's id + name into Deps so tools (list_chats, etc.)
+        # can scope their work to the current user instead of crashing with
+        # "no user context".
+        self.deps = Deps(
+            user_id=str(user.id),
+            user_name=getattr(user, "name", None) or getattr(user, "email", None),
+        )
         self.deps.ask_user = self._ask_user
         self.current_conversation_id: str | None = None
         self._turn_task: asyncio.Task[None] | None = None
@@ -151,10 +158,38 @@ class AgentSession:
         await send_event(self.websocket, "user_prompt", {"content": user_message})
 
         try:
+            # If the client picked a model from one of their custom providers
+            # (frame carries provider_id), look up that provider, decrypt the
+            # API key, and route the chat request to the provider's base_url.
+            provider_base_url: str | None = None
+            provider_api_key: str | None = None
+            provider_id = data.get("provider_id")
+            selected_model = data.get("model")
+            if provider_id:
+                try:
+                    async with get_db_context() as prov_db:
+                        prov = await ai_provider_repo.get_by_id(prov_db, provider_id)
+                        if prov is not None and prov.user_id == self.user.id:
+                            provider_base_url = prov.base_url
+                            provider_api_key = (
+                                ai_provider_repo.get_decrypted_api_key(prov)
+                                if prov.api_key_encrypted
+                                else None
+                            )
+                            if not selected_model and prov.models:
+                                selected_model = prov.models[0]
+                except Exception:
+                    logger.warning(
+                        "Failed to look up provider %s — falling back to default",
+                        provider_id,
+                        exc_info=True,
+                    )
+
             assistant = get_agent(
-                model_name=data.get("model"),
+                model_name=selected_model,
                 thinking_effort=data.get("thinking_effort"),
-                todo_capability=todo_cap,
+                provider_base_url=provider_base_url,
+                provider_api_key=provider_api_key,
             )
             model_history = build_message_history(self.conversation_history)
             user_input = await self._build_multimodal_input(user_message, file_ids)
@@ -344,14 +379,21 @@ class AgentSession:
                 pending[tool_event.part.tool_call_id] = tc
                 await send_event(self.websocket, "tool_call", tc)
             elif isinstance(tool_event, FunctionToolResultEvent):
+                # pydantic-ai 1.x: the result payload is on `tool_event.part`
+                # (a ToolReturnPart | RetryPromptPart), NOT `tool_event.result`.
+                # `tool_call_id` is a property on the base ToolResultEvent.
+                result_part = tool_event.part
+                result_text = (
+                    result_part.content if hasattr(result_part, "content") else str(result_part)
+                )
                 tc = pending.get(tool_event.tool_call_id)
                 if tc is not None:
-                    tc["result"] = str(tool_event.result.content)
+                    tc["result"] = str(result_text)
                 await send_event(
                     self.websocket,
                     "tool_result",
                     {
                         "tool_call_id": tool_event.tool_call_id,
-                        "content": str(tool_event.result.content),
+                        "content": str(result_text),
                     },
                 )

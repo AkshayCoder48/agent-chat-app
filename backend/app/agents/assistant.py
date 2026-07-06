@@ -27,7 +27,7 @@ from pydantic_ai.settings import ModelSettings
 from app.agents.prompts import DEFAULT_SYSTEM_PROMPT
 from app.agents.prompts import get_system_prompt_with_rag
 from pydantic_ai_todo import TodoCapability
-from app.agents.tools.ask_user_tool import MAX_QUESTIONS, QuestionItem, format_answers
+from app.agents.tools.ask_user_tool import MAX_QUESTIONS, QuestionItem, format_answers, parse_questions
 from app.agents.utils import get_current_datetime
 from app.agents.tools.rag_tool import search_knowledge_base
 from app.agents.tools.chart_tool import ChartType, create_chart
@@ -40,11 +40,26 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _build_model(model_name: str) -> OpenAIResponsesModel:
-    """OpenAI-only deployment."""
+def _build_model(
+    model_name: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> OpenAIResponsesModel:
+    """Build an OpenAI-compatible model client.
+
+    If ``base_url`` + ``api_key`` are provided, route to the user's custom
+    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, …).
+    Otherwise fall back to the server-configured default (``settings.AI_MODEL``
+    + ``settings.OPENAI_API_KEY``).
+    """
+    resolved_model = model_name or settings.AI_MODEL
+    resolved_key = api_key or settings.OPENAI_API_KEY
+    provider_kwargs: dict[str, Any] = {"api_key": resolved_key}
+    if base_url:
+        provider_kwargs["base_url"] = base_url
     return OpenAIResponsesModel(
-        model_name or settings.AI_MODEL,
-        provider=OpenAIProvider(api_key=settings.OPENAI_API_KEY),
+        resolved_model,
+        provider=OpenAIProvider(**provider_kwargs),
     )
 
 
@@ -69,9 +84,13 @@ class AssistantAgent:
         system_prompt: str | None = None,
         thinking_effort: str | None = None,
         todo_capability: "TodoCapability | None" = None,
+        provider_base_url: str | None = None,
+        provider_api_key: str | None = None,
     ):
         self.todo_capability = todo_capability
         self.model_name = model_name or settings.AI_MODEL
+        self.provider_base_url = provider_base_url
+        self.provider_api_key = provider_api_key
         # ``temperature`` stays ``None`` when caller didn't set it — don't fall
         # back to settings.AI_TEMPERATURE here. Reasoning/o-series models
         # (gpt-5.5, o1, …) reject the parameter entirely, so we only forward
@@ -86,7 +105,11 @@ class AssistantAgent:
         self._agent: Agent[Deps, str] | None = None
 
     def _create_agent(self) -> Agent[Deps, str]:
-        model = _build_model(self.model_name)
+        model = _build_model(
+            self.model_name,
+            base_url=self.provider_base_url,
+            api_key=self.provider_api_key,
+        )
 
         capabilities: list[Any] = [ReinjectSystemPrompt()]
         if self.thinking_effort:
@@ -191,7 +214,7 @@ class AssistantAgent:
             )
 
         @agent.tool
-        async def ask_user(ctx: RunContext[Deps], questions: list[QuestionItem]) -> str:
+        async def ask_user(ctx: RunContext[Deps], questions: Any) -> str:
             """Ask the user one or more questions and wait for their answers.
 
             Use this when a decision or missing detail would materially change what
@@ -214,9 +237,14 @@ class AssistantAgent:
                     "User interaction is unavailable here; proceed with a reasonable "
                     "assumption and state it briefly."
                 )
-            if not questions:
+            # Coerce + validate. Many OpenAI-compatible providers serialize the
+            # array as a JSON string with leading whitespace, which fails Pydantic's
+            # list validation. parse_questions handles that and drops bad items
+            # instead of crashing the whole turn.
+            items = parse_questions(questions)
+            if not items:
                 return "No questions were provided."
-            payload = [q.model_dump() for q in questions[:MAX_QUESTIONS]]
+            payload = [q.model_dump() for q in items[:MAX_QUESTIONS]]
             answers = await ctx.deps.ask_user(payload)
             return format_answers(payload, answers)
 
@@ -313,12 +341,16 @@ def get_agent(
     thinking_effort: str | None = None,
     temperature: float | None = None,
     todo_capability: "TodoCapability | None" = None,
+    provider_base_url: str | None = None,
+    provider_api_key: str | None = None,
 ) -> AssistantAgent:
     return AssistantAgent(
         model_name=model_name,
         thinking_effort=thinking_effort,
         temperature=temperature,
         todo_capability=todo_capability,
+        provider_base_url=provider_base_url,
+        provider_api_key=provider_api_key,
     )
 
 
