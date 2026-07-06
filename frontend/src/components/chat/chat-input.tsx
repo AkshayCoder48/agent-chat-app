@@ -279,9 +279,25 @@ export function ChatInput({
         />
       )}
       {attachedFiles.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 pb-2">
-          {attachedFiles.map((file) => (
-            <div key={file.id} className="relative">
+        <div className="flex flex-wrap items-center gap-2 pb-2 animate-fade-in">
+          {attachedFiles.map((file) => {
+            const ext = file.filename.lastIndexOf(".") > 0
+              ? file.filename.slice(file.filename.lastIndexOf(".") + 1).toLowerCase()
+              : "";
+            const extIcon: Record<string, string> = {
+              md: "📝", txt: "📄", py: "🐍", js: "📜", ts: "📜", tsx: "⚛️",
+              jsx: "⚛️", json: "⚙️", html: "🌐", css: "🎨", csv: "📊",
+              png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", svg: "🖼️",
+              pdf: "📕", doc: "📘", docx: "📘", xls: "📗", xlsx: "📗",
+              zip: "📦", mp3: "🎵", mp4: "🎬", wav: "🎵",
+            };
+            const sizeStr = file.size < 1024
+              ? `${file.size} B`
+              : file.size < 1024 * 1024
+              ? `${(file.size / 1024).toFixed(1)} KB`
+              : `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+            return (
+              <div key={file.id} className="relative">
               {file.file_type === "image" ? (
                 <div className="group relative h-16 w-16 overflow-hidden rounded-lg border">
                   <Image
@@ -300,9 +316,12 @@ export function ChatInput({
                   </button>
                 </div>
               ) : (
-                <Badge variant="secondary" className="gap-1.5 pr-1">
-                  <FileText className="h-3 w-3" />
-                  <span className="max-w-[150px] truncate text-xs">{file.filename}</span>
+                <Badge variant="secondary" className="gap-1.5 pr-1 py-1.5">
+                  <span className="text-sm">{extIcon[ext] || "📄"}</span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="max-w-[150px] truncate text-xs leading-tight">{file.filename}</span>
+                    <span className="text-[9px] text-muted-foreground leading-tight">{sizeStr} · {ext.toUpperCase() || "FILE"}</span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => removeFile(file.id)}
@@ -313,7 +332,8 @@ export function ChatInput({
                 </Badge>
               )}
             </div>
-          ))}
+            );
+          })}
           {isUploading && (
             <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-dashed">
               <Spinner className="text-muted-foreground h-5 w-5" />
