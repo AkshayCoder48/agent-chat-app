@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   XCircle,
   BarChart3,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toolCaption } from "@/lib/agent-step-captions";
@@ -26,6 +27,7 @@ import { LoadSkillResult, formatSkillName } from "./tool-results/skills";
 import { AskUserResult } from "./tool-results/ask-user";
 import { GenericToolResult, RawToolView } from "./tool-results/generic";
 import { RunPythonResult } from "./tool-results/run-python";
+import { FileDownloadResult, parseFileDownloadResult } from "./tool-results/file-download";
 
 interface ToolCallCardProps {
   toolCall: ToolCall;
@@ -41,7 +43,10 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
       (isRunPython && toolCall.status === "completed") ||
       (toolCall.name === "create_chart_tool" &&
         toolCall.status === "completed" &&
-        parseChartResult(toolCall.result) !== null),
+        parseChartResult(toolCall.result) !== null) ||
+      ((toolCall.name === "send_file" || toolCall.name === "send_folder") &&
+        toolCall.status === "completed" &&
+        parseFileDownloadResult(toolCall.result) !== null),
   );
   const [showRaw, setShowRaw] = useState(false);
 
@@ -90,14 +95,26 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
     [toolCall.name, toolCall.status, toolCall.result],
   );
   const isChart = chartSpec !== null;
+  // send_file / send_folder return a JSON payload the frontend renders as a
+  // clickable download card. Detect it once and memoize.
+  const fileDownloadSpec = useMemo(
+    () =>
+      (toolCall.name === "send_file" || toolCall.name === "send_folder") &&
+      toolCall.status === "completed"
+        ? parseFileDownloadResult(toolCall.result)
+        : null,
+    [toolCall.name, toolCall.status, toolCall.result],
+  );
+  const isFileDownload = fileDownloadSpec !== null;
   // A chart that finishes after this card mounted (live streaming) won't
   // have triggered the initial-state default — expand it on transition.
+  // Same for file_download cards.
   useEffect(() => {
-    if (isChart) setExpanded(true);
-  }, [isChart]);
+    if (isChart || isFileDownload) setExpanded(true);
+  }, [isChart, isFileDownload]);
 
   const hasSpecialRenderer =
-    isDateTime || isRAGSearch || isWebSearch || isAskUser || isChart || isRunPython;
+    isDateTime || isRAGSearch || isWebSearch || isAskUser || isChart || isRunPython || isFileDownload;
   const friendlyName = isDateTime
     ? "Current Date & Time"
     : isRAGSearch
@@ -108,15 +125,19 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           ? "Chart"
           : isAskUser
             ? "Question"
-            : isLoadSkill
-              ? loadedSkillName
-                ? formatSkillName(loadedSkillName)
-                : "Load Skill"
-              : isListSkills
-                ? "Available Skills"
-                : toolCall.name === "run_python"
-                  ? "Run Python"
-                  : toolCall.name;
+            : isFileDownload
+              ? fileDownloadSpec?.item_type === "folder"
+                ? "Folder Download"
+                : "File Download"
+              : isLoadSkill
+                ? loadedSkillName
+                  ? formatSkillName(loadedSkillName)
+                  : "Load Skill"
+                : isListSkills
+                  ? "Available Skills"
+                  : toolCall.name === "run_python"
+                    ? "Run Python"
+                    : toolCall.name;
 
   const ToolIcon = isDateTime
     ? Clock
@@ -128,9 +149,11 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           ? BarChart3
           : isAskUser
             ? MessageCircleQuestion
-            : isRunPython
-              ? Code2
-              : Wrench;
+            : isFileDownload
+              ? Download
+              : isRunPython
+                ? Code2
+                : Wrench;
 
   const toggleExpanded = () => {
     setExpanded((prev) => {
@@ -251,6 +274,8 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
             <WebSearchResults data={webResults} />
           ) : toolCall.status === "completed" && isChart && chartSpec ? (
             <ChartMessage spec={chartSpec} />
+          ) : toolCall.status === "completed" && isFileDownload && fileDownloadSpec ? (
+            <FileDownloadResult payload={fileDownloadSpec} />
           ) : isAskUser ? (
             <AskUserResult args={toolCall.args} resultText={resultText} />
           ) : isRunPython ? (
