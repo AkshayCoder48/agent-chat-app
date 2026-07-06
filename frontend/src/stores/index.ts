@@ -7,3 +7,5 @@ export { useConversationStore } from "./conversation-store";
 export { useFilePreviewStore } from "./file-preview-store";
 export { useKBSelectionStore } from "./kb-selection-store";
 export { useSourcesPanelStore } from "./sources-panel-store";
+export { useResearchStore } from "./research-store";
+export { useChatModeStore } from "./chat-mode-store";

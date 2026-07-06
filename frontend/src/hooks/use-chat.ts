@@ -10,12 +10,13 @@ import type {
   ChatMessageFile,
   Decision,
   PendingApproval,
+  ResearchTodo,
   ToolCall,
   WSEvent,
 } from "@/types";
 import { WS_URL } from "@/lib/constants";
 import { setUrlParam } from "@/lib/utils";
-import { useConversationStore } from "@/stores";
+import { useConversationStore, useResearchStore } from "@/stores";
 /** A message the user typed while the agent was busy / socket offline.
  *  Held outside the chat history until the drainer ships it. */
 export interface QueuedMessage {
