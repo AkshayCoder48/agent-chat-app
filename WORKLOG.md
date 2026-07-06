@@ -112,36 +112,62 @@ reused going forward.
 **Symptom:** frontend returned "Internal server error" / 503 when calling
 the backend. HF Space was stuck in `BUILD_ERROR`, then `RUNTIME_ERROR`.
 
-**Root cause #1 — Build failure (HF Dockerfile only, not in this repo):**
+**Root cause #1 — Build failure:**
 `RUN chmod +x /entrypoint.sh` ran *after* `USER appuser`, but the file
-was owned by root. chmod failed with `Operation not permitted`.
+was owned by root (COPY runs as root). chmod failed with
+`Operation not permitted` and the build exited 1.
 
-**Fix #1:** moved `COPY entrypoint.sh` + `chmod +x` to *before* the
-`USER appuser` directive in the HF Space Dockerfile, then `chown` the
-file so appuser can execute it.
+**Fix #1 (Dockerfile):** moved `COPY entrypoint.sh` + `chmod +x` to
+*before* the `USER appuser` directive, then `chown` the file so the
+runtime can execute it as appuser.
 
-**Root cause #2 — Runtime failure (HF Dockerfile's entrypoint.sh only):**
-HF Spaces containers have a small `/dev/shm` (64MB). Postgres' default
-`posix` dynamic shared memory type + `shared_buffers=128MB` couldn't
-allocate, so `pg_ctl start` exited with `could not start server`.
+**Root cause #2 — Runtime failure:**
+HF Spaces containers ship with a small `/dev/shm` (64MB). Postgres'
+default `posix` dynamic shared memory type + `shared_buffers=128MB`
+couldn't allocate, so `pg_ctl start` exited with
+`could not start server`.
 
-**Fix #2:** in the HF Space `entrypoint.sh`:
+**Fix #2 (entrypoint.sh):**
 - `dynamic_shared_memory_type=mmap` (avoids /dev/shm)
 - `shared_buffers=32MB`, `max_connections=20`, `work_mem=4MB`
-- `unix_socket_directories=/tmp`
+- `unix_socket_directories=/tmp` (default dir not always writable)
 - dump `postgres.log` on pg_ctl failure AND on ready-check timeout
 
-**Note:** These fixes live in the HF Space repo
-(`https://huggingface.co/spaces/NormieeBroo/agent-chat-app`), not in
-this GitHub repo, because the HF Space has its own self-contained
-Dockerfile + entrypoint.sh that bundles Postgres. This repo's
-`backend/Dockerfile` is the standard production one (no Postgres
-bundled, no chmod bug).
+### 8. Fix Vercel frontend env vars (frontend couldn't reach backend)
+
+**Symptom:** User reported `{"detail":"Not Found"}` from the HF Space URL.
+After HF Space was healthy, the **frontend** was still broken because
+it had zero env vars on Vercel — every API call defaulted to
+`http://localhost:8000` and failed.
+
+**Root cause:** Previous session set env vars on the wrong Vercel project.
+The production URL `frontend-wheat-zeta-47.vercel.app` is aliased to the
+`frontend` project (`prj_A3husicAn66zuu8Y4skrwX7PHdps`), but env vars
+were set on the `agent-chat-app` project (`prj_Zvq8hnXi8VNshBfCXpIYCk8kOc3d`)
+which has no production alias.
+
+**Fix:** Set the same 7 env vars on the `frontend` project and redeploy:
+- `BACKEND_URL=https://normieebroo-agent-chat-app.hf.space`
+- `BACKEND_WS_URL=wss://normieebroo-agent-chat-app.hf.space`
+- `NEXT_PUBLIC_API_URL=https://normieebroo-agent-chat-app.hf.space`
+- `NEXT_PUBLIC_WS_URL=wss://normieebroo-agent-chat-app.hf.space`
+- `NEXT_PUBLIC_AUTH_ENABLED=true`
+- `NEXT_PUBLIC_RAG_ENABLED=true`
+- `NEXT_PUBLIC_SITE_URL=https://frontend-wheat-zeta-47.vercel.app`
 
 **Verification:**
 - HF Space stage: `RUNNING`
 - `/api/v1/health` → `200 {"status":"healthy"}`
+- `/api/v1/agent/models` → `401` (expected — auth required, server healthy)
 - Frontend (Vercel): `https://frontend-wheat-zeta-47.vercel.app/` → `200`
+- Frontend → backend proxy `/api/auth/login` → `401 {"detail":"Login failed"}`
+  (real FastAPI responding, not localhost)
+- Frontend → backend proxy `/api/v1/agent/models` → `401` from FastAPI
+  (real backend responding)
+
+**Note about `{"detail":"Not Found"}` on HF Space root `/`:** this is
+FastAPI's default 404 (no route at `/`). The backend is healthy —
+hit `/api/v1/health` to verify. `/docs` is disabled in production.
 
 ## What's still pending (follow-up sessions)
 
