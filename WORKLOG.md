@@ -165,9 +165,73 @@ which has no production alias.
 - Frontend → backend proxy `/api/v1/agent/models` → `401` from FastAPI
   (real backend responding)
 
-**Note about `{"detail":"Not Found"}` on HF Space root `/`:** this is
-FastAPI's default 404 (no route at `/`). The backend is healthy —
-hit `/api/v1/health` to verify. `/docs` is disabled in production.
+### 9. Big backlog batch — backend + frontend fixes
+
+**Backend (HF Space + GitHub repo):**
+
+- **Fix `FunctionToolResultEvent has no attribute result`** —
+  pydantic-ai 1.x puts the result payload on `tool_event.part`
+  (a `ToolReturnPart | RetryPromptPart`), NOT `tool_event.result`.
+  Updated `_stream_tool_events` in `agent_session.py`.
+
+- **Fix undefined `todo_cap` reference** — `get_agent()` was called
+  with `todo_capability=todo_cap` but `todo_cap` was never defined in
+  the module, causing a `NameError` on every agent turn. Removed.
+
+- **Route chat to user's selected provider** — when the WS frame
+  carries `provider_id`, `agent_session.py` looks up the provider in
+  the DB, decrypts its API key, and passes `base_url` + `api_key` to
+  `get_agent()` → `_build_model()` → `OpenAIProvider(base_url=…)`.
+  The chat request now goes to the user's provider (OpenRouter, Groq,
+  Ollama, vLLM, LM Studio, …) instead of the server default.
+
+- **Inject user_id into agent Deps** — tools that need the current
+  user (e.g. `list_chats`) were crashing with "no user context".
+  `Deps` now carries `user_id` + `user_name` from the WS session.
+
+- **Fix "Input should be a valid array" on question card** — some
+  providers serialize the `questions` array as a JSON string with
+  leading whitespace. `ask_user_tool.py` now has `parse_questions()`
+  that coerces strings/dicts/scalars into a list of `QuestionItem`,
+  dropping bad items instead of crashing the whole turn.
+
+- **`/agent/models` no longer returns built-in model list** — the
+  chat picker should show only models the user explicitly added via
+  Settings → Config. Returns `models: []` + the default name.
+
+**Frontend (GitHub repo + Vercel):**
+
+- **Add `/api/ai-providers` proxy routes** (root cause of "request
+  failed" when adding a provider) — the Config page calls
+  `apiClient.post('/ai-providers')` which hits `/api/ai-providers`
+  on Next.js, but no proxy route existed. Added:
+  - `/api/ai-providers/route.ts` (GET, POST)
+  - `/api/ai-providers/[provider_id]/route.ts` (PATCH, DELETE)
+  - `/api/ai-providers/[provider_id]/test/route.ts` (POST)
+
+- **Wire `provider_id` through the WS frame** — `use-chat.ts`:
+  added `providerIdRef` + `setProviderId()`; payload now includes
+  `provider_id` when set. `chat-container.tsx`: passes `setProviderId`
+  to `ChatUI`; `ChatControls.onProviderSelect` flows the provider id
+  up to the chat layer.
+
+- **Fix prompt context leaking between chats** — when switching
+  conversations, reset `model` + `providerId` refs so they don't
+  carry over into the new chat's first message.
+
+- **Fade-in animation on streaming AI output** — added `.stream-fade`
+  CSS class (opacity + blur ramp) and applied it to the assistant
+  text bubble while streaming.
+
+- **Sidebar slide-in animation CSS** — added `.slide-in-left` CSS
+  class (translateX + blur ramp) for sidebar / sheet panel
+  transitions.
+
+**Verification:**
+- HF Space: `RUNNING`, `/api/v1/health` → 200
+- Frontend: `https://frontend-wheat-zeta-47.vercel.app/` → 200
+- `/api/ai-providers` proxy → 401 (was "Request failed" before)
+- `/api/v1/agent/models` proxy → 401 (backend reachable)
 
 ## What's still pending (follow-up sessions)
 
