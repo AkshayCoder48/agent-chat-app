@@ -69,18 +69,35 @@ export function ChatControls({
       .then((data) => {
         if (!data) return;
         if (data?.models) {
-          const models = [
-            { value: "", label: `Default (${data.default})` },
-            ...data.models.map((m: string) => ({ value: m, label: m })),
-          ];
+          // We no longer show a server-default entry — the default is the
+          // first user-added provider's first model (see data.default /
+          // data.default_provider_id). Only show raw model list if the
+          // backend ever returns one (currently empty).
+          const models = data.models.map((m: string) => ({ value: m, label: m }));
           setAvailableModels(models);
-          setSelectedModel(models[0]);
         }
         if (data?.providers) {
           setProviders(data.providers);
         }
+        // Auto-select the default = first provider's first model. The backend
+        // returns default_provider_id so we know which provider to bind to.
+        if (data?.default && data?.default_provider_id) {
+          const prov = (data.providers || []).find(
+            (p: CustomProvider) => p.id === data.default_provider_id,
+          );
+          if (prov) {
+            setSelectedModel({
+              value: `${prov.id}::${data.default}`,
+              label: `${prov.name} · ${data.default}`,
+            });
+            setSelectedProvider(prov);
+            onProviderSelect?.(prov);
+            onModelChange?.(data.default);
+          }
+        }
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [temperature, setTemperature] = useState<number | null>(null);

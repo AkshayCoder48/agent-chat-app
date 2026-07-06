@@ -271,6 +271,9 @@ export default function ConfigSettingsPage() {
         <HopxConfigSection />
       </SectionCard>
 
+      {/* System prompt override */}
+      <SystemPromptSection />
+
       <SectionCard
         title="Other API keys"
         description="Web search (Tavily), embeddings, etc. — coming in a follow-up session."
@@ -281,6 +284,108 @@ export default function ConfigSettingsPage() {
         </div>
       </SectionCard>
     </div>
+  );
+}
+
+// ---------- System Prompt Section ----------
+
+function SystemPromptSection() {
+  const [prompt, setPrompt] = useState<string>("");
+  const [label, setLabel] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    apiClient
+      .get("/agent-settings")
+      .then((d: { system_prompt?: string | null; label?: string | null }) => {
+        setPrompt(d.system_prompt || "");
+        setLabel(d.label || "");
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiClient.patch("/agent-settings", {
+        system_prompt: prompt.trim() || "",
+        label: label.trim() || "",
+      });
+      toast.success("System prompt saved");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    setSaving(true);
+    try {
+      await apiClient.delete("/agent-settings");
+      setPrompt("");
+      setLabel("");
+      toast.success("Reset to default prompt");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to reset");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
+      <SectionCard
+        title="System prompt"
+        description="Override the agent's default system prompt for your chats."
+      >
+        <div className="flex items-center justify-center py-8 text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading…
+        </div>
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard
+      title="System prompt"
+      description="Override the agent's default system prompt for your chats. Leave empty to use the built-in default."
+    >
+      <div className="space-y-4">
+        <FormField label="Label (optional)">
+          <Input
+            value={label}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
+            placeholder="e.g. Coding assistant, Research buddy"
+            maxLength={128}
+          />
+        </FormField>
+        <FormField label="System prompt">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Leave empty to use the default prompt. Write instructions for how the agent should behave in your chats…"
+            rows={10}
+            maxLength={20000}
+            className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            {prompt.length.toLocaleString()} / 20,000 chars
+          </p>
+        </FormField>
+        <div className="flex gap-2">
+          <Button onClick={save} disabled={saving} size="sm">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <CheckCircle2 className="h-4 w-4 mr-1.5" />}
+            Save prompt
+          </Button>
+          <Button onClick={reset} disabled={saving} size="sm" variant="outline">
+            Reset to default
+          </Button>
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
