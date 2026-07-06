@@ -16,7 +16,7 @@ import {
   Search,
   Upload,
 } from "lucide-react";
-import { useToast } from "@/components/ui/use-toast";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 interface WorkspaceEntry {
@@ -69,7 +69,6 @@ const EXT_ICONS: Record<string, string> = {
 };
 
 export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
-  const { toast } = useToast();
   const [listing, setListing] = useState<WorkspaceListing | null>(null);
   const [currentPath, setCurrentPath] = useState(".");
   const [loading, setLoading] = useState(true);
@@ -84,17 +83,15 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
         )) as WorkspaceListing;
         setListing(data);
       } catch (e) {
-        toast({
-          title: "Failed to load files",
+        toast.error("Failed to load files", {
           description: e instanceof Error ? e.message : "Unknown error",
-          variant: "destructive",
         });
         setListing(null);
       } finally {
         setLoading(false);
       }
     },
-    [toast]
+    []
   );
 
   useEffect(() => {
@@ -124,10 +121,8 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      toast({
-        title: "Download failed",
+      toast.error("Download failed", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     }
   };
@@ -150,10 +145,8 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      toast({
-        title: "Folder download failed",
+      toast.error("Folder download failed", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     }
   };

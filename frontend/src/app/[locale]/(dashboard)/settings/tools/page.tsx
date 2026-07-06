@@ -18,7 +18,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Wrench, Plus, Trash2, Pencil, Code, Search, Loader2 } from "lucide-react";
-import { useToast } from "@/components/ui/use-toast";
+import { toast } from "sonner";
 
 interface BuiltinTool {
   name: string;
@@ -50,7 +50,6 @@ interface CustomToolList {
 }
 
 export default function ToolsSettingsPage() {
-  const { toast } = useToast();
   const [builtinTools, setBuiltinTools] = useState<BuiltinTool[]>([]);
   const [customTools, setCustomTools] = useState<CustomTool[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,15 +70,13 @@ export default function ToolsSettingsPage() {
       setBuiltinTools(builtinData.tools || []);
       setCustomTools(customData.items || []);
     } catch (e) {
-      toast({
-        title: "Failed to load tools",
+      toast.error("Failed to load tools", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, []);
 
   useEffect(() => {
     void fetchData();
@@ -103,10 +100,8 @@ export default function ToolsSettingsPage() {
         prev.map((t) => (t.id === tool.id ? { ...t, is_enabled: enabled } : t))
       );
     } catch (e) {
-      toast({
-        title: "Failed to update tool",
+      toast.error("Failed to update tool", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     }
   };
@@ -116,12 +111,10 @@ export default function ToolsSettingsPage() {
     try {
       await apiClient.delete(`/custom-tools/${tool.id}`);
       setCustomTools((prev) => prev.filter((t) => t.id !== tool.id));
-      toast({ title: "Tool deleted", description: tool.name });
+      toast.success("Tool deleted", { description: tool.name });
     } catch (e) {
-      toast({
-        title: "Failed to delete tool",
+      toast.error("Failed to delete tool", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     }
   };
@@ -341,7 +334,6 @@ interface ToolEditorProps {
 }
 
 function ToolEditor({ open, tool, onClose, onSaved }: ToolEditorProps) {
-  const { toast } = useToast();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [params, setParams] = useState<ToolParameter[]>([]);
@@ -379,11 +371,7 @@ function ToolEditor({ open, tool, onClose, onSaved }: ToolEditorProps) {
 
   const handleSave = async () => {
     if (!name.trim() || !code.trim()) {
-      toast({
-        title: "Missing fields",
-        description: "Name and code are required.",
-        variant: "destructive",
-      });
+      toast.error("Missing fields", { description: "Name and code are required." });
       return;
     }
     setSaving(true);
@@ -397,17 +385,15 @@ function ToolEditor({ open, tool, onClose, onSaved }: ToolEditorProps) {
       };
       if (tool) {
         await apiClient.patch(`/custom-tools/${tool.id}`, body);
-        toast({ title: "Tool updated", description: name });
+        toast.success("Tool updated", { description: name });
       } else {
         await apiClient.post("/custom-tools", body);
-        toast({ title: "Tool created", description: name });
+        toast.success("Tool created", { description: name });
       }
       onSaved();
     } catch (e) {
-      toast({
-        title: "Failed to save tool",
+      toast.error("Failed to save tool", {
         description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
       });
     } finally {
       setSaving(false);
