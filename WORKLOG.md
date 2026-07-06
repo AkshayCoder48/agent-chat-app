@@ -107,6 +107,42 @@ reused going forward.
 - Removed `pb-20` bottom padding (was for the bar)
 - Sidebar now includes Settings link for mobile users
 
+### 7. Fix HF Space BUILD_ERROR + RUNTIME_ERROR (current session)
+
+**Symptom:** frontend returned "Internal server error" / 503 when calling
+the backend. HF Space was stuck in `BUILD_ERROR`, then `RUNTIME_ERROR`.
+
+**Root cause #1 — Build failure (HF Dockerfile only, not in this repo):**
+`RUN chmod +x /entrypoint.sh` ran *after* `USER appuser`, but the file
+was owned by root. chmod failed with `Operation not permitted`.
+
+**Fix #1:** moved `COPY entrypoint.sh` + `chmod +x` to *before* the
+`USER appuser` directive in the HF Space Dockerfile, then `chown` the
+file so appuser can execute it.
+
+**Root cause #2 — Runtime failure (HF Dockerfile's entrypoint.sh only):**
+HF Spaces containers have a small `/dev/shm` (64MB). Postgres' default
+`posix` dynamic shared memory type + `shared_buffers=128MB` couldn't
+allocate, so `pg_ctl start` exited with `could not start server`.
+
+**Fix #2:** in the HF Space `entrypoint.sh`:
+- `dynamic_shared_memory_type=mmap` (avoids /dev/shm)
+- `shared_buffers=32MB`, `max_connections=20`, `work_mem=4MB`
+- `unix_socket_directories=/tmp`
+- dump `postgres.log` on pg_ctl failure AND on ready-check timeout
+
+**Note:** These fixes live in the HF Space repo
+(`https://huggingface.co/spaces/NormieeBroo/agent-chat-app`), not in
+this GitHub repo, because the HF Space has its own self-contained
+Dockerfile + entrypoint.sh that bundles Postgres. This repo's
+`backend/Dockerfile` is the standard production one (no Postgres
+bundled, no chmod bug).
+
+**Verification:**
+- HF Space stage: `RUNNING`
+- `/api/v1/health` → `200 {"status":"healthy"}`
+- Frontend (Vercel): `https://frontend-wheat-zeta-47.vercel.app/` → `200`
+
 ## What's still pending (follow-up sessions)
 
 The convo.txt contains 50+ feature requests and bug fixes. Below is the
