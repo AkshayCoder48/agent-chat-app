@@ -326,6 +326,7 @@ function ChatUI({
           <div className="bg-card border-border focus-within:border-foreground/30 rounded-2xl border transition-colors">
             <div className="px-3 pt-3 sm:px-4 sm:pt-4">
               <ChatInput
+                key={currentConversationId ?? "new-chat"}
                 onSend={sendMessage}
                 disabled={
                   !isConnected ||

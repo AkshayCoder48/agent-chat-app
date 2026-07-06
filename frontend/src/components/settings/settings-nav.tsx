@@ -53,10 +53,10 @@ const ITEMS: NavItem[] = [
     description: "Model Context Protocol servers",
   },
   {
-    label: "Plugins",
-    href: ROUTES.SETTINGS_PLUGINS,
-    icon: Blocks,
-    description: "Catalog-installed plugins",
+    label: "Tools",
+    href: ROUTES.SETTINGS_TOOLS,
+    icon: Wrench,
+    description: "Built-in + custom AI tools",
   },
   {
     label: "Appearance",

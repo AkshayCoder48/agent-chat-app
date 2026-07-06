@@ -27,6 +27,7 @@ export const ROUTES = {
   SETTINGS_CONFIG: "/settings/config",
   SETTINGS_SKILLS: "/settings/skills",
   SETTINGS_MCPS: "/settings/mcps",
+  SETTINGS_TOOLS: "/settings/tools",
   SETTINGS_PLUGINS: "/settings/plugins",
   SETTINGS_NOTIFICATIONS: "/settings/notifications",
   SETTINGS_SLASH_COMMANDS: "/settings/slash-commands",

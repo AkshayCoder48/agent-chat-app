@@ -671,6 +671,37 @@
     }
   }
 
+  /* Generic fade-in used by cards, sections, list items. */
+  .animate-fade-in {
+    animation: animate-fade-in 320ms ease-out both;
+  }
+  @keyframes animate-fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Per-word streaming fade — wraps each new word as it streams in. */
+  .word-fade {
+    animation: word-fade-in 220ms ease-out both;
+    display: inline;
+  }
+  @keyframes word-fade-in {
+    from {
+      opacity: 0;
+      filter: blur(3px);
+    }
+    to {
+      opacity: 1;
+      filter: blur(0);
+    }
+  }
+
   /* Slide-in for sidebar / sheet panels — adds a subtle motion-blur feel. */
   .slide-in-left {
     animation: slide-in-left 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -686,6 +717,55 @@
       transform: translateX(0);
       filter: blur(0);
     }
+  }
+
+  /* Slide-in from the right (right-side panels like file browser). */
+  .slide-in-right {
+    animation: slide-in-right 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes slide-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+      filter: blur(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+      filter: blur(0);
+    }
+  }
+
+  /* Scale-in for modals / dialogs — subtle zoom + blur. */
+  .scale-in {
+    animation: scale-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+      filter: blur(3px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+      filter: blur(0);
+    }
+  }
+
+  /* Smooth hover lift for cards + interactive elements. */
+  .lift {
+    transition: transform 200ms ease, box-shadow 200ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+
+  /* Smooth transition for sidebar / panel opening (not just the contents). */
+  .panel-transition {
+    transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 240ms ease, filter 240ms ease;
   }
 
   /* Hover lift only when the device supports hover — touch devices skip the
