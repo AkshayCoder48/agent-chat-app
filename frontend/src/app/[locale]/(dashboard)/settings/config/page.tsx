@@ -815,7 +815,7 @@ function ProviderEditor({
           implement /v1/responses and the SSE parser hung forever waiting for
           a chunk that never came. */}
       <div>
-        <label className="text-sm font-medium">API endpoint type</label>
+        <span className="text-sm font-medium block">API endpoint type</span>
         <p className="text-xs text-muted-foreground mb-2">
           Most OpenAI-compatible providers (OpenRouter, Groq, Together, Ollama,
           vLLM, LM Studio, g4f.space, …) only support{" "}
