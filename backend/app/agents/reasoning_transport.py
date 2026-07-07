@@ -356,24 +356,32 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                     logger.debug("reasoning callback failed", exc_info=True)
 
         # After stripping reasoning_content/reasoning, check whether any
-        # choice still carries a meaningful payload. If not — and there's
-        # no top-level ``usage`` field — drop the chunk entirely.
+        # choice still carries a meaningful payload. If not, drop the
+        # chunk entirely so the SDK never sees a no-op chunk.
         #
         # This is the critical fix for the "stuck at thinking" hang on
         # g4f.space: their reasoning stream emits ~10-20 consecutive
-        # chunks with delta={"reasoning_content":"..."} and nothing else.
-        # After stripping, those chunks become delta={} — passing them
-        # through to the openai SDK results in a long stream of no-op
-        # chunks that pydantic-ai's stream consumer can't make progress
-        # on, so the UI hangs until the read timeout fires.
+        # chunks with delta={"reasoning_content":"...","content":null}.
+        # After stripping reasoning, those chunks become delta={"content":null}
+        # — passing them through to the openai SDK results in a long stream
+        # of no-op chunks that pydantic-ai's stream consumer can't make
+        # progress on, so the UI hangs until the read timeout fires and
+        # the SDK raises ``APIConnectionError("Connection error.")``.
+        #
+        # IMPORTANT: We do NOT use "usage" in obj as a "rescue" condition.
+        # g4f.space and other vLLM-based providers send ``usage`` in EVERY
+        # chunk (intermediate token counting), not just the final one —
+        # so checking for top-level usage would let pure-reasoning chunks
+        # through and the hang would persist.
         #
         # We DO NOT drop chunks that carry:
         #   - ``finish_reason`` (the "stop" signal — the SDK needs this
         #     to finalize the message)
-        #   - ``usage`` (the usage stats chunk — the SDK needs this for
-        #     token accounting when stream_options.include_usage=true)
-        #   - ``content`` / ``role`` / ``tool_calls`` / ``function_call``
-        #     (actual message content)
+        #   - non-empty ``content`` (actual text content)
+        #   - ``role`` (the "role announcement" first chunk — content is
+        #     "" there but role="assistant", which the SDK needs)
+        #   - ``tool_calls`` / ``tool_call`` / ``function_call``
+        #     (actual tool invocations)
         has_meaningful_payload = False
         for choice in choices:
             if not isinstance(choice, dict):
@@ -386,18 +394,21 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                 continue
             # ``content`` can be "" (empty string) on the first "role
             # announcement" chunk — that's fine, we check ``role`` too.
-            if (
-                delta.get("content")
-                or delta.get("role")
-                or delta.get("tool_calls")
-                or delta.get("tool_call")
-                or delta.get("function_call")
-            ):
+            # But ``content: null`` (None) is what g4f sends on reasoning-
+            # only chunks — that should NOT count as meaningful content.
+            content = delta.get("content")
+            if content:  # truthy: non-empty string only
                 has_meaningful_payload = True
                 break
-        if not has_meaningful_payload and "usage" not in obj:
-            # Pure reasoning chunk — already emitted via the callback.
-            # Drop it so the SDK doesn't see a no-op chunk.
+            if delta.get("role"):
+                has_meaningful_payload = True
+                break
+            if delta.get("tool_calls") or delta.get("tool_call") or delta.get("function_call"):
+                has_meaningful_payload = True
+                break
+        if not has_meaningful_payload:
+            # Pure reasoning chunk (or empty delta) — already emitted via
+            # the callback. Drop it so the SDK doesn't see a no-op chunk.
             return None
 
         return obj
