@@ -297,8 +297,8 @@ function SystemPromptSection() {
 
   useEffect(() => {
     apiClient
-      .get("/agent-settings")
-      .then((d: { system_prompt?: string | null; label?: string | null }) => {
+      .get<{ system_prompt?: string | null; label?: string | null }>("/agent-settings")
+      .then((d) => {
         setPrompt(d.system_prompt || "");
         setLabel(d.label || "");
       })
