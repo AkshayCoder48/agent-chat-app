@@ -54,7 +54,9 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // Note: 'output: standalone' is intentionally NOT set on Vercel —
+  // Vercel's Next.js builder manages its own output format. Standalone
+  // mode is only needed for self-hosted Docker deployments.
 
   // Security headers
   async headers() {
