@@ -126,7 +126,7 @@ export const useChatStore = create<ChatState>((set) => ({
         if (last && last.type === "text") {
           parts[parts.length - 1] = { ...last, content: (last.content ?? "") + text };
         } else {
-          parts.push({ id: newPartId(), type: "text", content: text });
+          parts.push({ id: newPartId(), type: "text" as const, content: text });
         }
         return { ...msg, parts, content: msg.content + text };
       });
@@ -143,7 +143,7 @@ export const useChatStore = create<ChatState>((set) => ({
         if (last && last.type === "thinking") {
           parts[parts.length - 1] = { ...last, content: (last.content ?? "") + text };
         } else {
-          parts.push({ id: newPartId(), type: "thinking", content: text });
+          parts.push({ id: newPartId(), type: "thinking" as const, content: text });
         }
         return { ...msg, parts, thinking: (msg.thinking ?? "") + text };
       });
@@ -157,7 +157,7 @@ export const useChatStore = create<ChatState>((set) => ({
         msg.id === messageId
           ? {
               ...msg,
-              parts: [...(msg.parts ?? []), { id: newPartId(), type: "tool", toolCall }],
+              parts: [...(msg.parts ?? []), { id: newPartId(), type: "tool" as const, toolCall }],
               toolCalls: [...(msg.toolCalls || []), toolCall],
             }
           : msg,
