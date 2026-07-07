@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { backendFetch, BackendApiError } from "@/lib/server-api";
+import { extractBackendErrorMessage } from "@/lib/backend-error";
 import type { LoginResponse } from "@/types";
 
 export async function POST(request: NextRequest) {
@@ -50,7 +51,7 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (error) {
     if (error instanceof BackendApiError) {
-      const detail = (error.data as { detail?: string })?.detail || "Login failed";
+      const detail = extractBackendErrorMessage(error.data, "Login failed");
       return NextResponse.json({ detail }, { status: error.status });
     }
     return NextResponse.json({ detail: "Internal server error" }, { status: 500 });

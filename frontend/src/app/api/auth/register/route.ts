@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { backendFetch, BackendApiError } from "@/lib/server-api";
+import { extractBackendErrorMessage } from "@/lib/backend-error";
 import type { RegisterResponse } from "@/types";
 
 export async function POST(request: NextRequest) {
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(data, { status: 201 });
   } catch (error) {
     if (error instanceof BackendApiError) {
-      const detail = (error.data as { detail?: string })?.detail || "Registration failed";
+      const detail = extractBackendErrorMessage(error.data, "Registration failed");
       return NextResponse.json({ detail }, { status: error.status });
     }
     return NextResponse.json({ detail: "Internal server error" }, { status: 500 });

@@ -17,7 +17,7 @@ import { EMAIL_RE, getPasswordStrength } from "@/lib/utils";
 export function RegisterForm() {
   const t = useTranslations("auth");
   const router = useRouter();
-  const { register } = useAuth();
+  const { register, login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -53,7 +53,15 @@ export function RegisterForm() {
     try {
       await register({ email, password, full_name: name || undefined });
       toast.success(t("registerSuccess"));
-      router.push(ROUTES.LOGIN + "?registered=true");
+      // Auto-login so the user lands straight in the app — no extra hop
+      // through the login page. If auto-login fails (rare, e.g. backend
+      // cookies didn't rotate), fall back to the login page with a
+      // "registered=true" hint so they can sign in manually.
+      try {
+        await login({ email, password });
+      } catch {
+        router.push(ROUTES.LOGIN + "?registered=true");
+      }
     } catch (err) {
       const message =
         err instanceof ApiError ? err.message : "Registration failed. Please try again.";

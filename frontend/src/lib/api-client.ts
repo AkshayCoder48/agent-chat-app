@@ -5,6 +5,7 @@
  */
 
 import { useAuthStore } from "@/stores";
+import { extractBackendErrorMessage } from "@/lib/backend-error";
 
 export class ApiError extends Error {
   constructor(
@@ -103,7 +104,7 @@ class ApiClient {
       }
       throw new ApiError(
         response.status,
-        errorData?.detail || errorData?.message || "Request failed",
+        extractBackendErrorMessage(errorData, "Request failed"),
         errorData,
       );
     }
