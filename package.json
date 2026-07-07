@@ -2,6 +2,11 @@
   "name": "agent-chat-app-root",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "bun@1.3.12",
+  "scripts": {
+    "build": "cd frontend && bun install && bun run build",
+    "dev": "cd frontend && bun run dev"
+  },
   "dependencies": {
     "next": "^15.1.0"
   }
