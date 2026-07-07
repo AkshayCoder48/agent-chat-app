@@ -248,7 +248,7 @@ export default function ToolsSettingsPage() {
             )}
           </SettingsSectionCard>
         </>
-      )
+      )}
 
       <ToolEditor
         open={editorOpen}
