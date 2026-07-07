@@ -656,3 +656,67 @@ if isinstance(data.get("questions"), str):
 ### Commit
 - `5e4b930` on `main` — pushed to GitHub; HF Space + Vercel will
   auto-deploy.
+
+---
+
+## 2026-07-07 — Fix stuck-at-thinking root cause (model_type + tools_enabled)
+
+### Task
+User reported chats still hung at "thinking" after the previous SSE
+parser fix. The real root cause was the backend routing every custom
+provider through `OpenAIResponsesModel` (POST /v1/responses), an
+endpoint only OpenAI implements. Providers like g4f.space return 404
+on /v1/responses and pydantic-ai's parser hangs forever waiting for
+the first SSE chunk.
+
+### Work Log
+- Diagnosed: `_build_model()` in `assistant.py` only branched on
+  `base_url is not None` → still used `OpenAIResponsesModel` for
+  every custom provider.
+- Added `ProviderConfig` dataclass with `model_type` ("chat" |
+  "responses", default "chat") and `tools_enabled` (default True).
+- Added `_build_model_from_provider_config()` dispatcher: routes to
+  `OpenAIChatModel` (POST /v1/chat/completions — universal) when
+  `model_type == "chat"`, `OpenAIResponsesModel` only when explicitly
+  set to "responses".
+- `_create_agent()` now conditionally registers tools (workspace ops,
+  RAG, charts, ask_user, code execution, Skills, MCP, custom tools)
+  based on `provider_tools_enabled`. Some g4f / free models 403 on
+  any `tools` array — skipping registration keeps the request body
+  clean so text-only chat still works.
+- `ask_user` tool type widened to `Any` so pydantic-ai forwards
+  whatever the model sent (string OR list); `parse_questions()`
+  normalizes both shapes and drops invalid items instead of crashing
+  the whole turn.
+- Added `model_type` + `tools_enabled` columns to `ai_providers`:
+  - DB model (`backend/app/db/models/ai_provider.py`)
+  - Schemas (`backend/app/schemas/ai_provider.py`)
+  - Repository (`backend/app/repositories/ai_provider.py`)
+  - Service (`backend/app/services/ai_provider.py`)
+- `agent_session.py` reads `model_type` + `tools_enabled` from the
+  provider row by ID and passes them to `get_agent()`.
+- Backend routes expose the new fields:
+  - `/api/v1/ai-providers` (CRUD + read)
+  - `/api/v1/agent/models` (model picker)
+- Alembic migrations 0028 + 0029 add the columns with sensible
+  server defaults ("chat" / true) so legacy rows backfill cleanly.
+- Frontend `settings/config/page.tsx` already had the new UI fields
+  (model type selector + tools toggle) from the previous session.
+
+### Files Changed
+- `backend/app/agents/assistant.py`
+- `backend/app/db/models/ai_provider.py`
+- `backend/app/schemas/ai_provider.py`
+- `backend/app/repositories/ai_provider.py`
+- `backend/app/services/ai_provider.py`
+- `backend/app/services/agent_session.py`
+- `backend/app/api/routes/v1/ai_providers.py`
+- `backend/app/api/routes/v1/agent.py`
+- `backend/alembic/env.py`
+- `backend/alembic/versions/0028_ai_provider_model_type.py` (new)
+- `backend/alembic/versions/0029_ai_provider_tools_enabled.py` (new)
+
+### Commit
+- `20f204d` on `main` — pushed to GitHub; HF Space + Vercel will
+  auto-deploy. Backend will run the new migrations automatically on
+  startup (auto-migrate-on-startup added in `ea4133c`).
