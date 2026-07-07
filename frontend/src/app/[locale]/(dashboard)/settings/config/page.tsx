@@ -354,16 +354,18 @@ function SystemPromptSection() {
       description="Override the agent's default system prompt for your chats. Leave empty to use the built-in default."
     >
       <div className="space-y-4">
-        <FormField label="Label (optional)">
+        <FormField label="Label (optional)" htmlFor="agent-label">
           <Input
+            id="agent-label"
             value={label}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
             placeholder="e.g. Coding assistant, Research buddy"
             maxLength={128}
           />
         </FormField>
-        <FormField label="System prompt">
+        <FormField label="System prompt" htmlFor="agent-system-prompt">
           <textarea
+            id="agent-system-prompt"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Leave empty to use the default prompt. Write instructions for how the agent should behave in your chats…"
