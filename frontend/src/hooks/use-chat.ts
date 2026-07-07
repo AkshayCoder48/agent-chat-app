@@ -569,6 +569,30 @@ export function useChat(options: UseChatOptions = {}) {
     setPendingQuestions(null);
   }, [sendMessage, updateMessage, setCurrentMessageId]);
 
+  // Stable setters for model / provider / temperature / thinking effort.
+  // These only mutate refs (no React state), so they can be useCallback with
+  // empty deps — keeping their references stable across renders.
+  // WITHOUT useCallback, every render produces new function references, which
+  // invalidates any useEffect that lists them as deps (e.g. the conversation-
+  // switch effect in chat-container.tsx), causing an infinite update loop:
+  // effect fires → clearMessages() → chat-store set() → useChatStore
+  // subscribers re-render → new setter refs → effect fires again → React #185.
+  const setModel = useCallback((model: string | null) => {
+    modelRef.current = model;
+  }, []);
+  const setProviderId = useCallback((providerId: string | null) => {
+    providerIdRef.current = providerId;
+  }, []);
+  const setTemperature = useCallback((temperature: number | null) => {
+    temperatureRef.current = temperature;
+  }, []);
+  const setThinkingEffort = useCallback(
+    (effort: "low" | "medium" | "high" | null) => {
+      thinkingEffortRef.current = effort;
+    },
+    [],
+  );
+
   // Drain message queue when processing finishes AND we're back online.
   // Re-runs on either flip so a reconnect after offline → drains; a busy turn
   // ending → drains the next one.
@@ -596,18 +620,10 @@ export function useChat(options: UseChatOptions = {}) {
     queuedMessages,
     cancelQueued,
     clearQueued,
-    setModel: (model: string | null) => {
-      modelRef.current = model;
-    },
-    setProviderId: (providerId: string | null) => {
-      providerIdRef.current = providerId;
-    },
-    setTemperature: (temperature: number | null) => {
-      temperatureRef.current = temperature;
-    },
-    setThinkingEffort: (effort: "low" | "medium" | "high" | null) => {
-      thinkingEffortRef.current = effort;
-    },
+    setModel,
+    setProviderId,
+    setTemperature,
+    setThinkingEffort,
     // Human-in-the-Loop support
     pendingApproval,
     sendResumeDecisions,

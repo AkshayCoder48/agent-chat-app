@@ -7,7 +7,6 @@ import { useAuthStore } from "@/stores";
 import { apiClient, ApiError } from "@/lib/api-client";
 import type { User, LoginRequest, RegisterRequest } from "@/types";
 import { ROUTES } from "@/lib/constants";
-import { isAppAdmin } from "@/lib/utils";
 
 // Session-level singletons so /auth/me runs ONCE per page load no matter how
 // many components mount useAuth(). Concurrent mounts share the in-flight
@@ -89,7 +88,7 @@ export function useAuth() {
         setUser(response.user);
         useAuthStore.getState().setAccessToken(response.access_token);
         authChecked = true; // login already populated user + token; skip /auth/me
-        router.push(isAppAdmin(response.user) ? ROUTES.DASHBOARD : ROUTES.CHAT);
+        router.push(ROUTES.CHAT);
         return response;
       } finally {
         setLoading(false);

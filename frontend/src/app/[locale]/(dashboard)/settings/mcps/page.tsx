@@ -30,6 +30,25 @@ const EMPTY_FORM = {
   headers: "",
 };
 
+/**
+ * Coerce an arbitrary backend response into an array.
+ *
+ * The backend `/mcp-servers` route returns a bare JSON array, but the proxy
+ * may pass through other shapes (e.g. `null` from an empty body, or an error
+ * object `{detail: "..."}`). Calling `.map()` on a non-array crashes the
+ * whole settings page — so we normalize here.
+ */
+function toArray<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (Array.isArray(obj.data)) return obj.data as T[];
+    if (Array.isArray(obj.servers)) return obj.servers as T[];
+    if (Array.isArray(obj.items)) return obj.items as T[];
+  }
+  return [];
+}
+
 export default function McpsSettingsPage() {
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,7 +60,7 @@ export default function McpsSettingsPage() {
     try {
       const res = await fetch("/api/mcp-servers");
       if (!res.ok) throw new Error("Failed to load MCP servers");
-      const data = (await res.json()) as MCPServer[];
+      const data = toArray<MCPServer>(await res.json());
       setServers(data);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Load failed");

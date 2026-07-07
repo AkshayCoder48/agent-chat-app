@@ -190,11 +190,20 @@ export const useChatStore = create<ChatState>((set) => ({
   setStreaming: (streaming) => set({ isStreaming: streaming }),
 
   clearMessages: () => {
-    if (typeof window !== "undefined") {
-      window.sessionStorage.removeItem(PERSIST_KEY);
-      window.sessionStorage.removeItem(PERSIST_CONV_KEY);
-    }
-    set({ messages: [] });
+    set((state) => {
+      // No-op when already empty — avoids creating a new state object reference
+      // that would re-render every useChatStore subscriber. This is critical
+      // because clearMessages is called from a useEffect in chat-container.tsx
+      // whose deps include functions whose references can change between
+      // renders; an unconditional set() here can lead to an infinite update
+      // loop (React error #185).
+      if (state.messages.length === 0) return state;
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem(PERSIST_KEY);
+        window.sessionStorage.removeItem(PERSIST_CONV_KEY);
+      }
+      return { messages: [] };
+    });
   },
 }));
 

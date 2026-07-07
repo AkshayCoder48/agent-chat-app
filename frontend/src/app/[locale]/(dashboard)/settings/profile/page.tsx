@@ -26,7 +26,6 @@ import {
   cn,
   formatDate,
   getErrorMessage,
-  isAppAdmin,
   MAX_AVATAR_SIZE_BYTES,
   timeAgo,
 } from "@/lib/utils";
@@ -208,7 +207,7 @@ export default function ProfileSettingsPage() {
                   : "Upload avatar"}
             </Button>
             <p className="text-muted-foreground mt-2 text-xs">
-              {isAppAdmin(user) ? "Admin · " : ""}Member since {formatDate(user.created_at)}
+              Member since {formatDate(user.created_at)}
             </p>
           </div>
         </div>

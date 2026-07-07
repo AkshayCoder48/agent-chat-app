@@ -67,6 +67,26 @@ const EMPTY_FORM = {
   parameters_schema: '{"type":"object","properties":{}}',
 };
 
+/**
+ * Coerce an arbitrary backend response into an array.
+ *
+ * The backend `/custom-tools` route returns a bare JSON array, but the proxy
+ * may pass through other shapes (e.g. `null` from an empty body, or an error
+ * object `{detail: "..."}` if the route 404'd and the proxy returned 200 with
+ * the error payload). Calling `.filter()` / `.map()` on a non-array crashes
+ * the whole settings page — so we normalize here.
+ */
+function toArray<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (Array.isArray(obj.data)) return obj.data as T[];
+    if (Array.isArray(obj.tools)) return obj.tools as T[];
+    if (Array.isArray(obj.items)) return obj.items as T[];
+  }
+  return [];
+}
+
 export default function ToolsSettingsPage() {
   const [tools, setTools] = useState<CustomTool[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -83,10 +103,10 @@ export default function ToolsSettingsPage() {
         fetch("/api/custom-tools/catalog"),
       ]);
       if (!customRes.ok) throw new Error("Failed to load custom tools");
-      const customData = (await customRes.json()) as CustomTool[];
+      const customData = toArray<CustomTool>(await customRes.json());
       setTools(customData);
       if (catalogRes.ok) {
-        const catalogData = (await catalogRes.json()) as CatalogItem[];
+        const catalogData = toArray<CatalogItem>(await catalogRes.json());
         setCatalog(catalogData);
       }
     } catch (e) {

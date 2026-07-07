@@ -12,7 +12,7 @@ import { Button, Input, Label } from "@/components/ui";
 import { useAuth } from "@/hooks";
 import { ApiError } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
-import { EMAIL_RE, isAppAdmin } from "@/lib/utils";
+import { EMAIL_RE } from "@/lib/utils";
 
 export function LoginForm() {
   const t = useTranslations("auth");
@@ -29,7 +29,7 @@ export function LoginForm() {
   // cookie), skip the form and bounce to the app.
   useEffect(() => {
     if (isAuthenticated && user) {
-      router.push(isAppAdmin(user) ? ROUTES.DASHBOARD : ROUTES.CHAT);
+      router.push(ROUTES.CHAT);
     }
   }, [isAuthenticated, user, router]);
 

@@ -6,9 +6,8 @@ import { useTranslations } from "next-intl";
 import { LayoutDashboard, MessageSquare, Search, Settings } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-import { useAuth } from "@/hooks";
 import { ROUTES } from "@/lib/constants";
-import { cn, isAppAdmin } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 interface TabItem {
   label: string;
@@ -22,7 +21,6 @@ interface TabItem {
 export function MobileTabBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { user } = useAuth();
   const t = useTranslations("nav");
 
   const stripped = pathname.replace(/^\/[a-z]{2}/, "");
@@ -31,7 +29,7 @@ export function MobileTabBar() {
     { label: t("chat"), href: ROUTES.CHAT, icon: MessageSquare, startsWith: true },
     {
       label: t("home"),
-      href: isAppAdmin(user) ? ROUTES.DASHBOARD : ROUTES.CHAT,
+      href: ROUTES.CHAT,
       icon: LayoutDashboard,
     },
     {

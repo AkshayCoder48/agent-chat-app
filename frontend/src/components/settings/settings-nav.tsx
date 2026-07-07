@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Blocks, Boxes, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
+import { Blocks, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -13,7 +13,7 @@ interface NavItem {
   href: string;
   icon: LucideIcon;
   description: string;
-  /** When true, dim the entry (used for the deprecated Plugins page). */
+  /** When true, dim the entry (used for deprecated pages). */
   muted?: boolean;
 }
 
@@ -59,13 +59,6 @@ const ITEMS: NavItem[] = [
     href: ROUTES.SETTINGS_TOOLS,
     icon: Wrench,
     description: "Custom HTTP / Python tools",
-  },
-  {
-    label: "Plugins",
-    href: ROUTES.SETTINGS_PLUGINS,
-    icon: Boxes,
-    description: "Deprecated — see Skills + MCPs",
-    muted: true,
   },
   {
     label: "Appearance",
