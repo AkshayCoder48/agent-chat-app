@@ -175,7 +175,7 @@ export default function ToolsSettingsPage() {
             {filteredCustom.length === 0 ? (
               <Card>
                 <CardContent className="py-10 text-center text-muted-foreground">
-                  No custom tools yet. Click "New tool" to create one — the AI will be
+                  No custom tools yet. Click &ldquo;New tool&rdquo; to create one — the AI will be
                   able to call it like any built-in tool.
                 </CardContent>
               </Card>
