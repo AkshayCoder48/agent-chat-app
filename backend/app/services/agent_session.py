@@ -43,6 +43,43 @@ from app.repositories import ai_provider_repo
 logger = logging.getLogger(__name__)
 
 
+def _format_agent_error(exc: BaseException) -> str:
+    """Format an agent exception with type + cause chain for the WS error event.
+
+    The openai SDK's ``APIConnectionError`` defaults to the generic
+    ``"Connection error."`` message that gives the user no clue what
+    actually went wrong (DNS? TLS? UA-block? malformed SSE? HTTP 403?
+    ConnectTimeout? ReadTimeout? RemoteProtocolError?).
+
+    This helper walks the ``__cause__`` / ``__context__`` chain and emits
+    ``"TypeA: msgA → TypeB: msgB"`` so the user sees the real
+    underlying cause.
+
+    Consecutive frames with identical messages are collapsed (the openai
+    SDK often re-wraps the httpx error with the same string).
+    """
+    parts: list[str] = []
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and depth < 6:
+        type_name = type(cur).__name__
+        msg = str(cur) or "(no message)"
+        frame = f"{type_name}: {msg}"
+        if not parts or parts[-1] != frame:
+            parts.append(frame)
+        # Prefer __cause__ (explicit ``raise X from Y``); fall back to
+        # __context__ (implicit chaining during exception handling).
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    # Single frame — return the bare message (cleaner in the UI).
+    if len(parts) == 1:
+        # Just the message, no type prefix — preserves historical UX for
+        # simple errors like "Email already registered".
+        only = parts[0]
+        return only.split(": ", 1)[1] if ": " in only else only
+    return " → ".join(parts)
+
+
 class AgentSession:
     """One WebSocket session with the AI agent."""
 
@@ -367,7 +404,13 @@ class AgentSession:
             raise
         except Exception as e:
             logger.exception("Error processing agent request")
-            await send_event(self.websocket, "error", {"message": str(e)})
+            # Walk the __cause__ / __context__ chain so the user sees the
+            # real underlying error instead of the openai SDK's generic
+            # "Connection error." string. A 10s ConnectTimeout surfaces as
+            # "APIConnectionError: Connection error. → ConnectTimeout: timed out"
+            # which actually tells you what's wrong.
+            msg = _format_agent_error(e)
+            await send_event(self.websocket, "error", {"message": msg})
 
     async def _ask_user(self, questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Pause the run: ask the client questions and block until they answer.

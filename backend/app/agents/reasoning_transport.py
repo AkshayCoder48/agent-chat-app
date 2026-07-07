@@ -345,15 +345,67 @@ def build_reasoning_aware_client(
 
     The returned client can be passed to ``OpenAIProvider(http_client=...)``
     so the OpenAI SDK uses it for all requests to ``/chat/completions``.
+
+    Hardening notes (each addresses a real failure mode we've seen in
+    production against free relays like g4f.space):
+
+    * **User-Agent** — the openai SDK ships a default UA of
+      ``"OpenAI/Python <ver>"``. Some relays (g4f.space, certain
+      Cloudflare-fronted proxies) silently drop connections carrying
+      that UA — surfacing in pydantic-ai as the generic
+      ``"Connection error."`` with no underlying cause. Override with a
+      browser-like UA.
+
+    * **HTTP/1.1 only** — pydantic-ai's SSE stream parser doesn't
+      tolerate the chunked-encoding quirks some HTTP/2 servers send.
+
+    * **follow_redirects=True** — g4f.space and a few other relays
+      redirect ``/v1/chat/completions`` to a CDN endpoint; the openai
+      SDK's default client follows redirects, but if we override
+      ``http_client`` we must re-enable it explicitly.
+
+    * **keepalive_expiry=0** — g4f.space and a few other free relays
+      reuse a connection for one SSE stream then drop it; sending a
+      second request (e.g. when the agent calls a tool and re-prompts
+      the model) on the same keep-alive socket raises
+      ``RemoteProtocolError``. Forcing a fresh socket per request
+      avoids this.
+
+    * **Connect timeout 15s** — so DNS/TLS failures surface fast
+      instead of hanging the whole chat turn.
+
+    * **Authorization header** — we set it here as a defensive default
+      so the request still authenticates even if some code path
+      bypasses the SDK's header injection. The SDK also sets its own
+      ``Authorization: Bearer <key>`` from the ``api_key`` we pass to
+      ``OpenAIProvider`` — request-level header wins, so the values
+      agree and there's no conflict.
     """
-    inner = httpx.AsyncHTTPTransport(retries=0)
+    inner = httpx.AsyncHTTPTransport(retries=0, http2=False)
     transport = ReasoningAwareTransport(inner, reasoning_callback=reasoning_callback)
     return httpx.AsyncClient(
         base_url=base_url,
         transport=transport,
-        timeout=httpx.Timeout(timeout, connect=10.0),
+        timeout=httpx.Timeout(timeout, connect=15.0),
+        # Some relays (g4f.space, Cloudflare-fronted proxies) silently
+        # drop requests carrying the openai SDK's default UA
+        # "OpenAI/Python <ver>". Override with a browser-like UA.
         headers={
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json, text/event-stream",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/121.0.0.0 Safari/537.36"
+            ),
         },
+        http2=False,
+        # g4f.space redirects /v1/chat/completions to a CDN — without
+        # follow_redirects, the request fails with a 3xx and the openai
+        # SDK wraps it as "Connection error.".
+        follow_redirects=True,
+        # g4f.space drops the socket after the first SSE stream —
+        # a second request on the same keep-alive socket raises
+        # RemoteProtocolError. Force a fresh socket per request.
+        keepalive_expiry=0.0,
     )
