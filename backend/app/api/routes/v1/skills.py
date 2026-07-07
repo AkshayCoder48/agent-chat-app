@@ -109,37 +109,57 @@ async def clawhub_catalog(current_user: CurrentUser) -> Any:
     on-disk skills.
 
     Falls back to a built-in starter catalog when the ClawHub API is
-    unreachable (offline dev, network restrictions, etc.).
+    unreachable (offline dev, network restrictions, etc.) or returns an
+    unexpected payload. The fallback is ALWAYS merged in so the user sees
+    at least the starter skills.
     """
     user_root = _skills_root(str(current_user.id))
     installed = {p.name for p in user_root.iterdir() if p.is_dir()} if user_root.exists() else set()
 
+    items: list[dict[str, Any]] = []
+    source = "fallback"
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(CLAWHUB_CATALOG_URL)
-            resp.raise_for_status()
-            data = resp.json()
-            items = data if isinstance(data, list) else data.get("skills", [])
+            if resp.status_code < 400:
+                try:
+                    data = resp.json()
+                    raw = data if isinstance(data, list) else data.get("skills", [])
+                    if isinstance(raw, list) and raw:
+                        items = raw
+                        source = "clawhub"
+                except Exception:
+                    # JSON parse failed — fall through to fallback below.
+                    pass
     except Exception as exc:
         logger.warning("ClawHub catalog fetch failed, using built-in fallback: %s", exc)
-        items = _builtin_catalog()
+
+    # Always merge the builtin catalog so the page is never empty. If ClawHub
+    # returned real entries, we prepend them (ClawHub first, builtin after).
+    builtin = _builtin_catalog()
+    seen_names = {i.get("name") or i.get("slug") for i in items if isinstance(i, dict)}
+    for entry in builtin:
+        if entry.get("name") not in seen_names:
+            items.append(entry)
 
     # Normalise + tag with installed state.
     normalised = []
     for item in items:
+        if not isinstance(item, dict):
+            continue
         name = item.get("name") or item.get("slug") or item.get("id")
         if not name:
             continue
         normalised.append(
             {
-                "name": name,
-                "description": item.get("description") or item.get("summary") or "",
-                "downloads": item.get("downloads") or item.get("download_count") or 0,
-                "url": item.get("url") or f"https://clawhub.ai/skills/{name}",
-                "installed": name in installed,
+                "name": str(name),
+                "description": str(item.get("description") or item.get("summary") or ""),
+                "downloads": int(item.get("downloads") or item.get("download_count") or 0),
+                "url": str(item.get("url") or f"https://clawhub.ai/skills/{name}"),
+                "installed": str(name) in installed,
             }
         )
-    return {"skills": normalised, "source": "clawhub" if items else "fallback"}
+    return {"skills": normalised, "source": source}
 
 
 @router.post("/install/{skill_name}")

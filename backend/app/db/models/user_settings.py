@@ -39,6 +39,7 @@ class UserSettings(Base, TimestampMixin):
     hopx_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     tavily_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     embeddings_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    env_vars: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     extra: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 

@@ -250,7 +250,7 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
           </div>
         ) : !listing ? (
           <div className="text-center py-8 text-sm text-muted-foreground px-4">
-            No workspace files. Ask the AI to create a file.
+            No files yet. Ask the AI to create a file or upload one in chat.
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-8 text-sm text-muted-foreground px-4">

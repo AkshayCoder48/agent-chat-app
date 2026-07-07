@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  Code,
-  Download,
   Loader2,
   Pencil,
   Plus,
@@ -32,7 +30,6 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { SectionCard as SettingsSectionCard } from "@/components/settings/settings-section";
-import { cn } from "@/lib/utils";
 
 interface CustomTool {
   id: string;
@@ -44,17 +41,6 @@ interface CustomTool {
   http_headers: Record<string, string>;
   python_source?: string | null;
   is_active: boolean;
-}
-
-interface CatalogItem {
-  name: string;
-  description: string;
-  parameters_schema: Record<string, unknown>;
-  impl_kind: "http_webhook" | "python_snippet";
-  http_url?: string | null;
-  http_headers: Record<string, string>;
-  python_source?: string | null;
-  installed: boolean;
 }
 
 const EMPTY_FORM = {
@@ -89,7 +75,6 @@ function toArray<T>(data: unknown): T[] {
 
 export default function ToolsSettingsPage() {
   const [tools, setTools] = useState<CustomTool[]>([]);
-  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -98,17 +83,10 @@ export default function ToolsSettingsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [customRes, catalogRes] = await Promise.all([
-        fetch("/api/custom-tools"),
-        fetch("/api/custom-tools/catalog"),
-      ]);
+      const customRes = await fetch("/api/custom-tools");
       if (!customRes.ok) throw new Error("Failed to load custom tools");
       const customData = toArray<CustomTool>(await customRes.json());
       setTools(customData);
-      if (catalogRes.ok) {
-        const catalogData = toArray<CatalogItem>(await catalogRes.json());
-        setCatalog(catalogData);
-      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Load failed");
     } finally {
@@ -154,42 +132,15 @@ export default function ToolsSettingsPage() {
     }
   };
 
-  const installCatalog = async (item: CatalogItem) => {
-    try {
-      const res = await fetch("/api/custom-tools", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: item.name,
-          description: item.description,
-          parameters_schema: item.parameters_schema,
-          impl_kind: item.impl_kind,
-          http_url: item.http_url,
-          http_headers: item.http_headers,
-          python_source: item.python_source,
-          is_active: true,
-        }),
-      });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { detail?: string };
-        throw new Error(err.detail ?? "Install failed");
-      }
-      toast.success(`Installed: ${item.name}`);
-      await fetchData();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Install failed");
-    }
-  };
-
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <Wrench className="h-6 w-6" />
-          Custom tools
+          Available tools
         </h1>
         <p className="text-muted-foreground mt-1">
-          Custom tools are functions the AI can call. Define them as HTTP
+          Available tools are functions the AI can call. Define them as HTTP
           webhooks or Python snippets — the AI picks them up automatically on
           the next chat turn.
         </p>
@@ -224,15 +175,16 @@ export default function ToolsSettingsPage() {
         <>
           <SettingsSectionCard
             title="Your tools"
-            description="Tools you've created or installed from the catalog below."
+            description="Tools you've created. These are available to the AI on every chat turn."
           >
             {filtered.length === 0 ? (
               <div className="rounded-xl border border-dashed border-foreground/15 p-8 text-center">
                 <Wrench className="mx-auto h-8 w-8 text-muted-foreground mb-3" />
-                <p className="font-medium">No custom tools yet</p>
+                <p className="font-medium">No tools yet</p>
                 <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
-                  Click <em>New tool</em> above, or install one from the
-                  starter catalog below.
+                  Click <em>New tool</em> above to define your first tool. Tools
+                  can be HTTP webhooks or Python snippets the AI calls
+                  automatically when your task matches.
                 </p>
               </div>
             ) : (
@@ -295,54 +247,8 @@ export default function ToolsSettingsPage() {
               </div>
             )}
           </SettingsSectionCard>
-
-          <SettingsSectionCard
-            title="Starter catalog"
-            description="One-click install these starter tools. They cover common patterns (HTTP webhook, Python snippet) you can copy and modify."
-          >
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {catalog.map((c) => (
-                <li
-                  key={c.name}
-                  className={cn(
-                    "flex flex-col gap-2 rounded-xl border border-border p-3",
-                    c.installed && "bg-emerald-500/5 border-emerald-500/30",
-                  )}
-                >
-                  <div className="flex items-start gap-2">
-                    <Code className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-mono text-sm font-medium">{c.name}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                        {c.description}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono uppercase text-muted-foreground/60">
-                      {c.impl_kind === "http_webhook" ? "HTTP" : "Python"}
-                    </span>
-                    {c.installed ? (
-                      <Badge variant="outline" className="text-[10px]">
-                        Installed
-                      </Badge>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs"
-                        onClick={() => installCatalog(c)}
-                      >
-                        <Download className="h-3.5 w-3.5 mr-1" /> Install
-                      </Button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </SettingsSectionCard>
         </>
-      )}
+      )
 
       <ToolEditor
         open={editorOpen}

@@ -177,12 +177,39 @@ def _custom_tools_section(tools: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _env_vars_section(env_vars: list[dict[str, Any]]) -> str:
+    """Append a short summary of the user's env vars so the AI knows what
+    credentials are available — without leaking the secret values.
+
+    The list contains ``{name, is_secret}`` entries only; values are never
+    passed into the prompt. The AI can use ``set_env`` / ``delete_env`` /
+    ``list_env`` to manage them, and ``read_file(".env")`` to read the
+    actual values from the Hopx sandbox when running code on the user's
+    behalf.
+    """
+    if not env_vars:
+        return ""
+    lines = [
+        "\n\n# Environment variables",
+        "The user has saved these env vars — call `read_file(\".env\")` from the",
+        "user's Hopx sandbox to read the actual values when you need to run code",
+        "with their credentials. Use `set_env`, `delete_env`, and `list_env` to",
+        "manage them at chat time:",
+    ]
+    for v in env_vars:
+        name = v.get("name") or "VAR"
+        kind = "secret" if v.get("is_secret") else "plain"
+        lines.append(f"- `{name}` ({kind})")
+    return "\n".join(lines)
+
+
 def build_user_system_prompt(
     *,
     user_id: UUID | str | None = None,
     skills: list[dict[str, Any]] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     custom_tools: list[dict[str, Any]] | None = None,
+    env_vars: list[dict[str, Any]] | None = None,
     user_override: str | None = None,
     user_override_enabled: bool = False,
 ) -> str:
@@ -193,8 +220,9 @@ def build_user_system_prompt(
          user's saved prompt verbatim (with the dynamic additions appended).
       2. Otherwise use the default prompt + RAG guidance.
 
-    The dynamic sections (skills, MCP, custom tools) are always appended so
-    the LLM knows what's available regardless of which base prompt is used.
+    The dynamic sections (skills, MCP, custom tools, env vars) are always
+    appended so the LLM knows what's available regardless of which base
+    prompt is used.
     """
     if user_override_enabled and user_override and user_override.strip():
         base = user_override.strip()
@@ -205,6 +233,7 @@ def build_user_system_prompt(
         _skills_section(skills or []),
         _mcp_section(mcp_servers or []),
         _custom_tools_section(custom_tools or []),
+        _env_vars_section(env_vars or []),
     ]
     return base + "".join(s for s in sections if s)
 
@@ -223,6 +252,7 @@ async def load_user_prompt_extras(user_id: UUID | str) -> dict[str, Any]:
         "skills": [],
         "mcp_servers": [],
         "custom_tools": [],
+        "env_vars": [],
     }
 
     try:
@@ -240,6 +270,15 @@ async def load_user_prompt_extras(user_id: UUID | str) -> dict[str, Any]:
             if row is not None:
                 out["user_override"] = row.system_prompt
                 out["user_override_enabled"] = row.system_prompt_enabled
+                # Load env var metadata (names + is_secret — values are NOT
+                # exposed to the prompt; the AI reads them via read_file(".env")
+                # from the Hopx sandbox).
+                env_dict = dict(row.env_vars or {})
+                out["env_vars"] = [
+                    {"name": k, "is_secret": bool(v.get("is_secret", True))}
+                    for k, v in env_dict.items()
+                    if isinstance(v, dict)
+                ]
 
             mcp_rows = (
                 await db.execute(

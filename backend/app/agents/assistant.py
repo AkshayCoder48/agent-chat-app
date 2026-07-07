@@ -48,6 +48,22 @@ from app.agents.tools.workspace_tools import (
     send_folder as ws_send_folder,
     write_file as ws_write_file,
 )
+from app.agents.tools.sc_tools import (
+    CreateSCArgs as SCCreateArgs,
+    DeleteSCArgs as SCDeleteArgs,
+    EditSCArgs as SCEditArgs,
+    create_sc as sc_create,
+    delete_sc as sc_delete,
+    edit_sc as sc_edit,
+    list_sc as sc_list,
+)
+from app.agents.tools.env_tools import (
+    DeleteEnvArgs,
+    SetEnvArgs,
+    delete_env as env_delete,
+    list_env as env_list,
+    set_env as env_set,
+)
 from pathlib import Path
 
 from pydantic_ai_skills import SkillsToolset
@@ -501,6 +517,108 @@ class AssistantAgent:
             """
             import json as _json
             result = await ws_read_chat(ctx.deps.user_id or "", conversation_id)
+            return _json.dumps(result)
+
+        # ----------------------------------------------------- slash command tools
+        # "sc" = "slash command". Let the AI collaboratively build /shortcuts
+        # with the user — e.g. "make a /research command that …". The new
+        # command appears in the user's slash palette on the next render.
+
+        @agent.tool
+        async def create_sc(ctx: RunContext[Deps], args: SCCreateArgs) -> str:
+            """Create a new slash command (shortcut) for the user.
+
+            "sc" stands for "slash command". Use this when the user asks you
+            to make a new /<name> shortcut that expands to a stored prompt.
+            The new command appears in the user's slash palette immediately.
+
+            Args:
+                args: {name, prompt, is_enabled?} — name is lowercase-with-hyphens,
+                    prompt is the full text the command expands to.
+            """
+            import json as _json
+            result = await sc_create(ctx.deps.user_id or "", args)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def edit_sc(ctx: RunContext[Deps], args: SCEditArgs) -> str:
+            """Edit an existing slash command's name, prompt, or enabled flag.
+
+            Args:
+                args: {name, new_name?, new_prompt?, is_enabled?} — at least one
+                    optional field must be set. Only custom commands can be edited;
+                    built-in overrides accept is_enabled only.
+            """
+            import json as _json
+            result = await sc_edit(ctx.deps.user_id or "", args)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def delete_sc(ctx: RunContext[Deps], args: SCDeleteArgs) -> str:
+            """Delete a slash command by name.
+
+            Args:
+                args: {name} — the /<name> of the command to delete.
+            """
+            import json as _json
+            result = await sc_delete(ctx.deps.user_id or "", args)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def list_slash_commands(ctx: RunContext[Deps]) -> str:
+            """List the user's existing slash commands (so you can avoid
+            name collisions before calling create_sc, or find the right
+            command to edit/delete).
+            """
+            import json as _json
+            result = await sc_list(ctx.deps.user_id or "")
+            return _json.dumps(result)
+
+        # ----------------------------------------------------- env var tools
+        # Let the AI manage the user's environment variables. When the user
+        # has a Hopx API key set, every mutation also rewrites the .env file
+        # in their Hopx sandbox — the AI can then read_file(".env") to use
+        # those credentials when running code on the user's behalf.
+
+        @agent.tool
+        async def set_env(ctx: RunContext[Deps], args: SetEnvArgs) -> str:
+            """Create or update an environment variable for the user.
+
+            Use this when the user asks you to save a credential, API key, or
+            any config value the AI should reuse later. The value is encrypted
+            at rest (when is_secret=true) and synced to the user's Hopx
+            sandbox as a .env file so future code executions can read it.
+
+            Args:
+                args: {name, value, is_secret?} — name is UPPER_SNAKE_CASE,
+                    value is the raw string, is_secret (default true) controls
+                    whether the UI masks the value.
+            """
+            import json as _json
+            result = await env_set(ctx.deps.user_id or "", args)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def delete_env(ctx: RunContext[Deps], args: DeleteEnvArgs) -> str:
+            """Delete an environment variable by name.
+
+            Args:
+                args: {name} — the UPPER_SNAKE_CASE name of the var to remove.
+            """
+            import json as _json
+            result = await env_delete(ctx.deps.user_id or "", args)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def list_env(ctx: RunContext[Deps]) -> str:
+            """List the user's environment variables.
+
+            Secret values are masked; plain values are returned in full. Use
+            this to see what credentials the user has already saved before
+            asking them to re-supply one.
+            """
+            import json as _json
+            result = await env_list(ctx.deps.user_id or "")
             return _json.dumps(result)
 
     def _register_custom_tools(self, agent: Agent[Deps, str]) -> None:

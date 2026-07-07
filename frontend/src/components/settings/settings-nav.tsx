@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Blocks, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
+import { Blocks, KeyRound, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -58,7 +58,13 @@ const ITEMS: NavItem[] = [
     label: "Tools",
     href: ROUTES.SETTINGS_TOOLS,
     icon: Wrench,
-    description: "Custom HTTP / Python tools",
+    description: "Available HTTP / Python tools",
+  },
+  {
+    label: "Env vars",
+    href: ROUTES.SETTINGS_ENV,
+    icon: KeyRound,
+    description: "Secrets the AI can read at chat time",
   },
   {
     label: "Appearance",

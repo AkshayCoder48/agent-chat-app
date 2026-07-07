@@ -365,6 +365,7 @@ class AgentSession:
                 skills=extras.get("skills"),
                 mcp_servers=extras.get("mcp_servers"),
                 custom_tools=extras.get("custom_tools"),
+                env_vars=extras.get("env_vars"),
                 user_override=extras.get("user_override"),
                 user_override_enabled=bool(extras.get("user_override_enabled")),
             )

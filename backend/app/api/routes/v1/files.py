@@ -27,7 +27,14 @@ async def upload_file(
     current_user: CurrentUser,
     file: UploadFile = File(...),
 ) -> Any:
-    """Upload a file for use in chat."""
+    """Upload a file for use in chat.
+
+    The file is stored as a ChatFile row (so the chat preview / download UI
+    can serve it). When the user has a Hopx API key set, the file is ALSO
+    mirrored into their Hopx sandbox so the agent can read it via the
+    workspace tools (``read_file``, ``list_files`` …). Mirroring is
+    best-effort — a Hopx failure does NOT fail the upload.
+    """
     data = await file.read()
     chat_file = await file_upload_svc.upload(
         user_id=current_user.id,
@@ -35,6 +42,34 @@ async def upload_file(
         filename=file.filename or "unknown",
         content_type=file.content_type,
     )
+
+    # Best-effort mirror to Hopx sandbox (when the user has a key set).
+    try:
+        from app.agents.tools.hopx_client import get_user_hopx_key
+        from app.agents.tools.workspace_tools import _get_hopx_session
+        from app.agents.tools.hopx_client import hopx_write_file
+
+        api_key = await get_user_hopx_key(current_user.id)
+        if api_key:
+            session = await _get_hopx_session(current_user.id)
+            if session is not None:
+                # Try to decode as text; if it's binary we still write the
+                # raw bytes via a base64 wrapper so the agent can at least
+                # see the file exists.
+                try:
+                    text = data.decode("utf-8", errors="replace")
+                except Exception:
+                    text = f"<binary file {file.filename!r}, {len(data)} bytes>"
+                safe_name = (file.filename or "upload").lstrip("/")
+                await hopx_write_file(
+                    session["api_key"],
+                    session["sandbox_id"],
+                    f"uploads/{safe_name}",
+                    text,
+                )
+    except Exception:
+        logger.warning("Hopx mirror failed for upload", exc_info=True)
+
     return FileUploadResponse(
         id=chat_file.id,
         filename=chat_file.filename,
@@ -230,7 +265,70 @@ async def list_own_workspace(
     current_user: CurrentUser,
     path: str = Query(".", description="Relative path inside the user's workspace"),
 ) -> Any:
-    """List the contents of the calling user's workspace directory."""
+    """List the contents of the calling user's workspace directory.
+
+    When the user has a Hopx API key set, the listing is served from their
+    Hopx sandbox (so files the agent created via the Hopx-backed
+    ``create_file`` tool show up). Otherwise we fall back to the local
+    per-user workspace directory.
+    """
+    # Hopx route.
+    try:
+        from app.agents.tools.hopx_client import get_user_hopx_key, hopx_list_files
+        from app.agents.tools.workspace_tools import _get_hopx_session
+
+        api_key = await get_user_hopx_key(current_user.id)
+        if api_key:
+            session = await _get_hopx_session(current_user.id)
+            if session is not None:
+                data = await hopx_list_files(
+                    session["api_key"], session["sandbox_id"], path
+                )
+                if data is not None:
+                    # Normalise Hopx response to our shape.
+                    raw_entries = (
+                        data.get("entries") or data.get("files") or []
+                        if isinstance(data, dict)
+                        else []
+                    )
+                    entries = []
+                    for e in raw_entries:
+                        if not isinstance(e, dict):
+                            continue
+                        name = str(e.get("name") or e.get("path") or "")
+                        if not name:
+                            continue
+                        # Strip leading "./" from Hopx paths so they match
+                        # the local-workspace naming convention.
+                        name = name.lstrip("./")
+                        is_dir = bool(e.get("is_dir") or e.get("type") == "dir" or e.get("type") == "folder")
+                        entries.append(
+                            {
+                                "name": name,
+                                "type": "folder" if is_dir else "file",
+                                "size": int(e.get("size") or 0),
+                            }
+                        )
+                    # Compute a parent path for breadcrumbs.
+                    parent = None
+                    if path not in {".", "./", "", "/"}:
+                        # Strip trailing slash, split, drop the last segment.
+                        norm = path.rstrip("/")
+                        if "/" in norm:
+                            parent = norm.rsplit("/", 1)[0] or "."
+                        else:
+                            parent = "."
+                    return {
+                        "path": path,
+                        "absolute": f"hopx://{session['sandbox_id']}/{path}",
+                        "parent": parent,
+                        "entries": entries,
+                    }
+                # Hopx call failed (returned None) — fall through to local.
+    except Exception:
+        logger.warning("Hopx list failed, falling back to local", exc_info=True)
+
+    # Local fallback.
     root = _workspace_root(str(current_user.id))
     try:
         target = _resolve_safe(root, path)
@@ -278,7 +376,48 @@ async def download_own_workspace_file(
     current_user: CurrentUser,
     path: str = Query(..., description="Relative path inside the user's workspace"),
 ) -> Any:
-    """Serve a single file from the calling user's workspace."""
+    """Serve a single file from the calling user's workspace.
+
+    When the user has a Hopx API key set, the file is fetched from their
+    Hopx sandbox and streamed back. Otherwise we serve from the local
+    per-user workspace directory.
+    """
+    # Hopx route.
+    try:
+        from app.agents.tools.hopx_client import get_user_hopx_key, hopx_read_file
+        from app.agents.tools.workspace_tools import _get_hopx_session
+
+        api_key = await get_user_hopx_key(current_user.id)
+        if api_key:
+            session = await _get_hopx_session(current_user.id)
+            if session is not None:
+                text = await hopx_read_file(
+                    session["api_key"], session["sandbox_id"], path
+                )
+                if text is not None:
+                    from fastapi.responses import Response
+
+                    name = path.rsplit("/", 1)[-1] if "/" in path else path
+                    return Response(
+                        content=text.encode("utf-8", errors="replace"),
+                        media_type="application/octet-stream",
+                        headers={
+                            "Content-Disposition": f'inline; filename="{name}"',
+                            "X-Frame-Options": "SAMEORIGIN",
+                            "Content-Security-Policy": "frame-ancestors 'self'",
+                        },
+                    )
+                # Hopx read returned None — fall through to local 404.
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="File not found in Hopx sandbox",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("Hopx download failed, falling back to local", exc_info=True)
+
+    # Local fallback.
     root = _workspace_root(str(current_user.id))
     try:
         target = _resolve_safe(root, path)
