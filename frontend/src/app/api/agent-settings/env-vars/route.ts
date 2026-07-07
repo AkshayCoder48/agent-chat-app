@@ -1,41 +1,24 @@
-import { NextRequest, NextResponse } from "next/server";
-import { backendFetch, BackendApiError } from "@/lib/server-api";
+import { NextRequest } from "next/server";
+import { authedBackendFetch } from "@/lib/authed-backend-fetch";
 
-function authHeaders(req: NextRequest): Record<string, string> {
-  const tok = req.cookies.get("access_token")?.value;
-  return tok ? { Authorization: `Bearer ${tok}` } : {};
-}
+/**
+ * Proxy /api/agent-settings/env-vars to the FastAPI backend.
+ * Uses `authedBackendFetch` for silent token refresh + real error surfacing.
+ */
 
 export async function GET(request: NextRequest) {
-  try {
-    const data = await backendFetch(`/api/v1/agent-settings/env-vars`, {
-      headers: { ...authHeaders(request) },
-    });
-    return NextResponse.json(data);
-  } catch (error) {
-    if (error instanceof BackendApiError) {
-      return NextResponse.json({ detail: error.message }, { status: error.status });
-    }
-    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
-  }
+  const r = await authedBackendFetch(request, `/api/v1/agent-settings/env-vars`);
+  if (r.ok) return r.response;
+  return Response.json({ detail: r.message }, { status: r.status });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.text();
-    const data = await backendFetch(`/api/v1/agent-settings/env-vars`, {
-      method: "POST",
-      body,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(request),
-      },
-    });
-    return NextResponse.json(data, { status: 201 });
-  } catch (error) {
-    if (error instanceof BackendApiError) {
-      return NextResponse.json({ detail: error.message }, { status: error.status });
-    }
-    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
-  }
+  const body = await request.text();
+  const r = await authedBackendFetch(request, `/api/v1/agent-settings/env-vars`, {
+    method: "POST",
+    body,
+    headers: { "Content-Type": "application/json" },
+  });
+  if (r.ok) return new Response(JSON.stringify(r.data), { status: 201, headers: { "Content-Type": "application/json" } });
+  return Response.json({ detail: r.message }, { status: r.status });
 }

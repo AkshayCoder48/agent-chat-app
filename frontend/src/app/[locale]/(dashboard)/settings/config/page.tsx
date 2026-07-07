@@ -324,7 +324,23 @@ function OtherApiKeysSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error("Failed to save");
+      if (!res.ok) {
+        let msg = "Failed to save — please try again.";
+        try {
+          const errData = await res.json();
+          if (typeof errData?.detail === "string" && errData.detail.trim()) {
+            msg = errData.detail;
+          } else if (typeof errData?.message === "string" && errData.message.trim()) {
+            msg = errData.message;
+          }
+        } catch {
+          // ignore — keep default msg
+        }
+        if (res.status === 401) {
+          msg = "Your session has expired. Please log in again and retry.";
+        }
+        throw new Error(msg);
+      }
       toast.success("API keys saved");
       setTavily("•••• (set)");
       setEmbeddings("•••• (set)");
@@ -422,7 +438,16 @@ function SystemPromptSection() {
           system_prompt_enabled: enabled,
         }),
       });
-      if (!res.ok) throw new Error("Failed to save");
+      if (!res.ok) {
+        let msg = "Failed to save — please try again.";
+        try {
+          const errData = await res.json();
+          if (typeof errData?.detail === "string" && errData.detail.trim()) msg = errData.detail;
+          else if (typeof errData?.message === "string" && errData.message.trim()) msg = errData.message;
+        } catch { /* ignore */ }
+        if (res.status === 401) msg = "Your session has expired. Please log in again and retry.";
+        throw new Error(msg);
+      }
       toast.success("System prompt saved");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save");
@@ -437,7 +462,16 @@ function SystemPromptSection() {
       const res = await fetch("/api/agent-settings/system-prompt", {
         method: "DELETE",
       });
-      if (!res.ok) throw new Error("Failed to reset");
+      if (!res.ok) {
+        let msg = "Failed to reset — please try again.";
+        try {
+          const errData = await res.json();
+          if (typeof errData?.detail === "string" && errData.detail.trim()) msg = errData.detail;
+          else if (typeof errData?.message === "string" && errData.message.trim()) msg = errData.message;
+        } catch { /* ignore */ }
+        if (res.status === 401) msg = "Your session has expired. Please log in again and retry.";
+        throw new Error(msg);
+      }
       setPrompt("");
       setEnabled(false);
       toast.success("Reset to default prompt");
@@ -790,7 +824,26 @@ function HopxConfigSection() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ hopx_api_key: key.trim() }),
         });
-        if (!res.ok) throw new Error("Failed to save");
+        if (!res.ok) {
+          // Surface the real backend error instead of a generic string.
+          let msg = "Failed to save — please try again.";
+          try {
+            const errData = await res.json();
+            if (typeof errData?.detail === "string" && errData.detail.trim()) {
+              msg = errData.detail;
+            } else if (typeof errData?.message === "string" && errData.message.trim()) {
+              msg = errData.message;
+            }
+          } catch {
+            // response had no JSON body — keep the default message
+          }
+          // Special-case 401: the auto-refresh in the route handler tried
+          // and failed, so the user needs to log in again.
+          if (res.status === 401) {
+            msg = "Your session has expired. Please log in again and retry.";
+          }
+          throw new Error(msg);
+        }
         if (typeof window !== "undefined") {
           window.localStorage.setItem("hopx_api_key", key.trim());
         }

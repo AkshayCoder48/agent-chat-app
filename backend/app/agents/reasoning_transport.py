@@ -22,6 +22,20 @@ Two purposes:
 The previous parser (delta.content → text, native reasoning → ThinkingPart)
 is untouched. Both parsers run side-by-side: this transport only adds a
 third channel for the non-standard ``reasoning_content`` field.
+
+Robustness notes (learned the hard way from g4f.space):
+
+* SSE separators can be ``\\n\\n`` *or* ``\\r\\n\\r\\n`` depending on the
+  provider's HTTP stack. We normalize CRLF → LF before splitting so both
+  shapes parse the same way.
+* Chunks arrive at arbitrary byte boundaries — a single ``aiter_bytes()``
+  chunk may contain half an event, two events, or no events at all. We
+  buffer until we see a full event separator before transforming; the
+  trailing buffer is only flushed once the upstream stream ends.
+* Some providers send an event with no ``data:`` line (just comments or
+  ``event:`` / ``id:`` fields). These are passed through unchanged.
+* Some providers send ``choices: null`` (not ``[]``) for the usage chunk.
+  Both shapes are treated as "drop this chunk".
 """
 
 from __future__ import annotations
@@ -81,37 +95,104 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
         if not (path.endswith("/chat/completions") or path.endswith("/chat/completions/")):
             return response
         ctype = response.headers.get("content-type", "")
-        if "text/event-stream" not in ctype:
-            return response
-        return self._wrap_stream_response(response)
+        # We intercept when the response advertises SSE. We also intercept
+        # when the content-type is missing/unknown because some providers
+        # (and some HTTP proxies) strip the content-type. We do NOT
+        # intercept when the response is explicitly application/json — that
+        # means a single (non-streamed) completion, and the OpenAI SDK
+        # parses it fine without us.
+        if ctype and "text/event-stream" not in ctype and "application/json" not in ctype:
+            # Unknown content-type — intercept defensively (we'll just pass
+            # bytes through if it doesn't look like SSE).
+            return self._wrap_stream_response(response)
+        if "text/event-stream" in ctype:
+            return self._wrap_stream_response(response)
+        return response
 
     def _wrap_stream_response(self, response: httpx.Response) -> httpx.Response:
-        # Use aiter_bytes — we want the raw byte stream from the network.
-        # We capture the original iterator by calling aiter_bytes() once.
+        # Capture the original byte iterator. We must call aiter_bytes() ONCE
+        # — calling it again would create a second iterator over the same
+        # underlying stream and break consumption accounting.
         original_aiter = response.aiter_bytes()
         transport = self
 
         class _FilteredStream(httpx.AsyncByteStream):
             async def __aiter__(self) -> AsyncIterator[bytes]:
+                # We accumulate raw bytes here and split on the SSE event
+                # separator. CRLF is normalized to LF on the BUFFER (not on
+                # individual chunks) — this is critical because chunks can
+                # arrive at any byte boundary (even 1 byte at a time), so a
+                # ``\r`` and the following ``\n`` may land in different
+                # chunks. Without buffer-level normalization the SSE
+                # separator ``\r\n\r\n`` never matches ``\n\n`` and the
+                # parser hangs forever waiting for the first event —
+                # exactly the "stuck at thinking" bug we saw on g4f.space.
                 buffer = b""
                 try:
                     async for chunk in original_aiter:
+                        if not chunk:
+                            continue
                         buffer += chunk
-                        # SSE events are separated by \n\n
+                        # Buffer-level CRLF → LF normalization. We must do
+                        # this AFTER appending (not on the chunk) because
+                        # the ``\r`` and ``\n`` may have arrived in
+                        # different chunks. Stray trailing ``\r`` at the
+                        # end of the buffer (with no ``\n`` yet) is left
+                        # alone — it'll be normalized next iteration when
+                        # the matching ``\n`` arrives, or trimmed off in
+                        # the trailing-flush step at the bottom.
+                        if b"\r\n" in buffer:
+                            buffer = buffer.replace(b"\r\n", b"\n")
+                        # SSE events are separated by \n\n. Split out every
+                        # complete event and yield it (possibly transformed).
                         while b"\n\n" in buffer:
                             event_bytes, buffer = buffer.split(b"\n\n", 1)
+                            # Skip empty events (just whitespace between
+                            # separators) — yielding them would confuse the
+                            # SDK's SSE parser into thinking an event with
+                            # no data arrived.
+                            if not event_bytes.strip():
+                                continue
                             event_text = event_bytes.decode("utf-8", errors="replace")
-                            modified = await transport._transform_event(event_text)
+                            try:
+                                modified = await transport._transform_event(event_text)
+                            except Exception:
+                                # Never let a transform bug kill the stream
+                                # — fall back to passing the event through
+                                # unchanged so the chat keeps working.
+                                logger.warning(
+                                    "ReasoningAwareTransport: _transform_event failed, "
+                                    "passing event through unchanged",
+                                    exc_info=True,
+                                )
+                                modified = event_text
                             if modified is not None:
                                 yield (modified + "\n\n").encode("utf-8", errors="replace")
-                    # Flush any trailing bytes (e.g. final "[DONE]" without trailing newline)
+                    # After the upstream stream ends, flush any trailing
+                    # bytes (e.g. a final ``data: [DONE]`` without a
+                    # trailing newline). This MUST happen outside the
+                    # for-loop so we don't yield partial events mid-stream.
                     if buffer.strip():
+                        # Final CRLF normalization pass on the trailing buffer
+                        # in case the last ``\r\n`` straddled a chunk
+                        # boundary and didn't get normalized above.
+                        buffer = buffer.replace(b"\r\n", b"\n").rstrip(b"\r")
                         final_text = buffer.decode("utf-8", errors="replace")
-                        final = await transport._transform_event(final_text)
+                        try:
+                            final = await transport._transform_event(final_text)
+                        except Exception:
+                            logger.warning(
+                                "ReasoningAwareTransport: trailing flush transform failed, "
+                                "passing through unchanged",
+                                exc_info=True,
+                            )
+                            final = final_text
                         if final is not None:
                             yield (final + "\n\n").encode("utf-8", errors="replace")
                 except Exception:
-                    logger.warning("ReasoningAwareTransport stream failed", exc_info=True)
+                    logger.warning(
+                        "ReasoningAwareTransport stream failed", exc_info=True
+                    )
                     raise
 
             async def aclose(self) -> None:
@@ -125,10 +206,21 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
 
         # Build a new streaming Response. We pass `stream=_FilteredStream()`
         # which httpx will iterate when the consumer reads the body.
-        headers = dict(response.headers)
-        # Strip content-length since the body length is now different.
+        # Use a case-insensitive MutableHeaders copy so we can safely pop
+        # headers regardless of the original casing used by the upstream.
+        headers = httpx.Headers(response.headers)
+        # Strip content-length since the body length is now different —
+        # keeping it would make httpx think the response was truncated.
+        # ``headers.pop`` is silent when the key is absent.
         headers.pop("content-length", None)
         headers.pop("Content-Length", None)
+        # Ensure the SDK routes this through its SSE parser, not the JSON
+        # parser. Some providers set "application/json" even for streams;
+        # that causes the SDK to buffer the whole body and the chat hangs
+        # at "Thinking…" forever.
+        existing_ct = headers.get("content-type", "")
+        if "text/event-stream" not in existing_ct:
+            headers["content-type"] = "text/event-stream"
         new_response = httpx.Response(
             status_code=response.status_code,
             headers=headers,
@@ -171,7 +263,10 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                 try:
                     obj = json.loads(payload)
                 except json.JSONDecodeError:
-                    # Malformed JSON — pass through unchanged.
+                    # Malformed JSON — pass through unchanged. This can
+                    # happen with providers that send partial JSON across
+                    # multiple events (very rare, but we don't want to
+                    # crash the whole turn on it).
                     out_lines.append(stripped)
                     continue
                 modified = await self._transform_chunk(obj)
@@ -194,7 +289,8 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
 
         choices = obj.get("choices")
         # Drop chunks with empty/null choices (the usage-only chunk that
-        # crashes parsers that index choices[0]).
+        # crashes parsers that index choices[0]). Both ``[]`` and ``None``
+        # are treated as "drop".
         if not choices:
             return None
 
@@ -205,6 +301,9 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                 continue
             delta = choice.get("delta")
             if not isinstance(delta, dict):
+                # Some providers send ``message`` instead of ``delta`` for
+                # the first chunk. Don't try to extract reasoning_content
+                # from it — just pass through.
                 continue
             # Extract reasoning_content (may be at top level of delta or
             # nested under model_extra for some SDK serializations).
@@ -216,14 +315,17 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                     rc = extra.pop("reasoning_content", None)
                     if not extra:
                         delta.pop("model_extra", None)
-            if rc:
-                # Strip from delta — handled by us via callback, NOT by pydantic-ai.
-                pass
             # Same for "reasoning" (some providers use this shorter name).
             reasoning_short = delta.pop("reasoning", None)
             if reasoning_short and not rc:
                 rc = reasoning_short
 
+            # Also handle the "thinking" field (Yet another non-standard
+            # name used by some providers like某些 Anthropic-compatible
+            # gateways). We don't strip ``thinking`` because pydantic-ai
+            # may handle it natively for some model classes — only strip
+            # the non-standard ``reasoning_content`` / ``reasoning`` /
+            # ``reasoning_content`` variants.
             if rc and cb is not None and isinstance(rc, str) and rc:
                 try:
                     await cb(rc)
@@ -231,6 +333,7 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                     logger.debug("reasoning callback failed", exc_info=True)
 
         return obj
+
 
 def build_reasoning_aware_client(
     base_url: str,

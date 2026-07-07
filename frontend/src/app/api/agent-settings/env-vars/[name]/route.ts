@@ -1,36 +1,28 @@
-import { NextRequest, NextResponse } from "next/server";
-import { backendFetch, BackendApiError } from "@/lib/server-api";
+import { NextRequest } from "next/server";
+import { authedBackendFetch } from "@/lib/authed-backend-fetch";
 
-function authHeaders(req: NextRequest): Record<string, string> {
-  const tok = req.cookies.get("access_token")?.value;
-  return tok ? { Authorization: `Bearer ${tok}` } : {};
-}
+/**
+ * Proxy /api/agent-settings/env-vars/[name] to the FastAPI backend.
+ * Uses `authedBackendFetch` for silent token refresh + real error surfacing.
+ */
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> },
 ) {
   const { name } = await params;
-  try {
-    const body = await request.text();
-    const data = await backendFetch(
-      `/api/v1/agent-settings/env-vars/${encodeURIComponent(name)}`,
-      {
-        method: "PUT",
-        body,
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders(request),
-        },
-      },
-    );
-    return NextResponse.json(data);
-  } catch (error) {
-    if (error instanceof BackendApiError) {
-      return NextResponse.json({ detail: error.message }, { status: error.status });
-    }
-    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
-  }
+  const body = await request.text();
+  const r = await authedBackendFetch(
+    request,
+    `/api/v1/agent-settings/env-vars/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      body,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+  if (r.ok) return r.response;
+  return Response.json({ detail: r.message }, { status: r.status });
 }
 
 export async function DELETE(
@@ -38,19 +30,11 @@ export async function DELETE(
   { params }: { params: Promise<{ name: string }> },
 ) {
   const { name } = await params;
-  try {
-    const data = await backendFetch(
-      `/api/v1/agent-settings/env-vars/${encodeURIComponent(name)}`,
-      {
-        method: "DELETE",
-        headers: { ...authHeaders(request) },
-      },
-    );
-    return NextResponse.json(data);
-  } catch (error) {
-    if (error instanceof BackendApiError) {
-      return NextResponse.json({ detail: error.message }, { status: error.status });
-    }
-    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
-  }
+  const r = await authedBackendFetch(
+    request,
+    `/api/v1/agent-settings/env-vars/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (r.ok) return r.response;
+  return Response.json({ detail: r.message }, { status: r.status });
 }
