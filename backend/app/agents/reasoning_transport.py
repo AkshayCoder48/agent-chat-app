@@ -283,6 +283,29 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
         """Filter / transform one parsed chat-completion chunk.
 
         Returns ``None`` to drop the chunk, else the (possibly modified) dict.
+
+        Why we drop "empty-delta" chunks after stripping reasoning:
+
+        g4f.space (and other reasoning-capable free relays) emits a stream
+        where the model thinks for ~10-20 chunks before producing any
+        visible content. Each reasoning chunk looks like::
+
+            {"choices":[{"index":0,"delta":{"reasoning_content":"...","reasoning":"..."}}]}
+
+        After we strip ``reasoning_content`` + ``reasoning``, the delta
+        becomes ``{}`` (completely empty). The openai SDK parses these
+        as no-op ChatCompletionChunks. pydantic-ai's stream consumer
+        sees no text content arriving for an extended period and the
+        UI hangs at "Thinking…" until the SDK's read timeout fires
+        (600s by default) — at which point the openai SDK raises
+        ``APIConnectionError("Connection error.")``.
+
+        Fix: after extracting reasoning, check whether the chunk still
+        carries any meaningful payload (content, role, tool_calls,
+        finish_reason, or usage). If not, drop it entirely. The
+        reasoning callback still fires for each dropped chunk, so the
+        frontend still renders the reasoning live — only the no-op
+        SDK chunks are suppressed.
         """
         if not isinstance(obj, dict):
             return obj
@@ -331,6 +354,51 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
                     await cb(rc)
                 except Exception:
                     logger.debug("reasoning callback failed", exc_info=True)
+
+        # After stripping reasoning_content/reasoning, check whether any
+        # choice still carries a meaningful payload. If not — and there's
+        # no top-level ``usage`` field — drop the chunk entirely.
+        #
+        # This is the critical fix for the "stuck at thinking" hang on
+        # g4f.space: their reasoning stream emits ~10-20 consecutive
+        # chunks with delta={"reasoning_content":"..."} and nothing else.
+        # After stripping, those chunks become delta={} — passing them
+        # through to the openai SDK results in a long stream of no-op
+        # chunks that pydantic-ai's stream consumer can't make progress
+        # on, so the UI hangs until the read timeout fires.
+        #
+        # We DO NOT drop chunks that carry:
+        #   - ``finish_reason`` (the "stop" signal — the SDK needs this
+        #     to finalize the message)
+        #   - ``usage`` (the usage stats chunk — the SDK needs this for
+        #     token accounting when stream_options.include_usage=true)
+        #   - ``content`` / ``role`` / ``tool_calls`` / ``function_call``
+        #     (actual message content)
+        has_meaningful_payload = False
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if choice.get("finish_reason") is not None:
+                has_meaningful_payload = True
+                break
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            # ``content`` can be "" (empty string) on the first "role
+            # announcement" chunk — that's fine, we check ``role`` too.
+            if (
+                delta.get("content")
+                or delta.get("role")
+                or delta.get("tool_calls")
+                or delta.get("tool_call")
+                or delta.get("function_call")
+            ):
+                has_meaningful_payload = True
+                break
+        if not has_meaningful_payload and "usage" not in obj:
+            # Pure reasoning chunk — already emitted via the callback.
+            # Drop it so the SDK doesn't see a no-op chunk.
+            return None
 
         return obj
 
