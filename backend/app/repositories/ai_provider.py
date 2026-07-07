@@ -55,6 +55,8 @@ async def create(
     api_key: str | None,
     models: list[str],
     is_active: bool = True,
+    model_type: str = "chat",
+    tools_enabled: bool = True,
 ) -> AIProvider:
     provider = AIProvider(
         user_id=user_id,
@@ -63,6 +65,8 @@ async def create(
         api_key_encrypted=_encrypt_api_key(api_key),
         models=models,
         is_active=is_active,
+        model_type=model_type,
+        tools_enabled=tools_enabled,
     )
     db.add(provider)
     await db.flush()

@@ -32,6 +32,11 @@ def _to_read(p) -> AIProviderRead:
         base_url=p.base_url,
         models=list(p.models or []),
         is_active=p.is_active,
+        # New fields — read straight off the row. Both columns are non-nullable
+        # with sensible server-side defaults ("chat" / true), so legacy rows
+        # backfilled by the alembic migration will also serialize cleanly.
+        model_type=getattr(p, "model_type", None) or "chat",
+        tools_enabled=bool(getattr(p, "tools_enabled", True)),
         has_api_key=bool(p.api_key_encrypted),
         created_at=p.created_at,
         updated_at=p.updated_at,

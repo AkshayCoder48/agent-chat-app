@@ -250,6 +250,8 @@ class AgentSession:
             # API key, and route the chat request to the provider's base_url.
             provider_base_url: str | None = None
             provider_api_key: str | None = None
+            provider_model_type: str = "chat"
+            provider_tools_enabled: bool = True
             provider_id = data.get("provider_id")
             selected_model = data.get("model")
             if provider_id:
@@ -262,6 +264,27 @@ class AgentSession:
                                 ai_provider_repo.get_decrypted_api_key(prov)
                                 if prov.api_key_encrypted
                                 else None
+                            )
+                            # Per-provider knobs that control how the agent
+                            # talks to the provider:
+                            #   - model_type: "chat" (POST /v1/chat/completions,
+                            #     universal) vs "responses" (POST /v1/responses,
+                            #     OpenAI-direct only). Defaults to "chat" so
+                            #     third-party providers like g4f.space work
+                            #     out of the box — using OpenAIResponsesModel
+                            #     against them is the root cause of stuck-at-
+                            #     thinking because the SSE stream never starts.
+                            #   - tools_enabled: when False, the agent registers
+                            #     NO tools so the request body has no ``tools``
+                            #     array. Works around 403s from g4f / free
+                            #     models that reject any tool payload.
+                            provider_model_type = (
+                                getattr(prov, "model_type", None) or "chat"
+                            )
+                            if provider_model_type not in ("chat", "responses"):
+                                provider_model_type = "chat"
+                            provider_tools_enabled = bool(
+                                getattr(prov, "tools_enabled", True)
                             )
                             if not selected_model and prov.models:
                                 selected_model = prov.models[0]
@@ -278,6 +301,8 @@ class AgentSession:
                 todo_capability=self.todo_integration.capability,
                 provider_base_url=provider_base_url,
                 provider_api_key=provider_api_key,
+                provider_model_type=provider_model_type,  # type: ignore[arg-type]
+                provider_tools_enabled=provider_tools_enabled,
                 system_prompt=self._user_system_prompt,
                 user_skills_dir=self._user_skills_dir,
                 custom_tools=self._user_custom_tools,

@@ -42,6 +42,16 @@ interface AIProvider {
   base_url: string;
   models: string[];
   is_active: boolean;
+  // "chat" -> POST /v1/chat/completions (universal — works with every
+  // OpenAI-compatible provider including g4f.space). "responses" -> POST
+  // /v1/responses (OpenAI-direct only). Defaults to "chat" so a freshly
+  // added provider works out of the box without the user having to think
+  // about endpoint shape.
+  model_type: "chat" | "responses";
+  // When false, NO tools array is sent in the request body. Some providers
+  // (notably certain g4f models) reject any request with a tools array via
+  // HTTP 403; toggling this off lets the user still chat in text-only mode.
+  tools_enabled: boolean;
   has_api_key: boolean;
   created_at: string;
   updated_at: string;
@@ -65,6 +75,8 @@ interface ProviderDraft {
   api_key: string;
   models: string[];
   is_active: boolean;
+  model_type: "chat" | "responses";
+  tools_enabled: boolean;
 }
 
 const EMPTY_DRAFT: ProviderDraft = {
@@ -73,6 +85,8 @@ const EMPTY_DRAFT: ProviderDraft = {
   api_key: "",
   models: [],
   is_active: true,
+  model_type: "chat",
+  tools_enabled: true,
 };
 
 // ---------- Page ----------
@@ -117,6 +131,8 @@ export default function ConfigSettingsPage() {
       api_key: "", // never pre-fill the key
       models: [...p.models],
       is_active: p.is_active,
+      model_type: p.model_type ?? "chat",
+      tools_enabled: p.tools_enabled ?? true,
     });
   };
 
@@ -143,6 +159,8 @@ export default function ConfigSettingsPage() {
         api_key: draft.api_key.trim() || null,
         models: draft.models.filter((m) => m.trim()).map((m) => m.trim()),
         is_active: draft.is_active,
+        model_type: draft.model_type,
+        tools_enabled: draft.tools_enabled,
       };
       if (editingId) {
         await apiClient.patch(`/ai-providers/${editingId}`, body);
@@ -577,6 +595,20 @@ function ProviderRow({
             {!provider.is_active && (
               <Badge variant="outline" className="text-[10px]">inactive</Badge>
             )}
+            {provider.model_type === "responses" ? (
+              <Badge variant="outline" className="text-[10px] font-mono" title="POST /v1/responses — OpenAI direct only">
+                responses
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] font-mono" title="POST /v1/chat/completions — universal">
+                chat
+              </Badge>
+            )}
+            {provider.tools_enabled === false && (
+              <Badge variant="outline" className="text-[10px]" title="No tools array sent — text-only mode">
+                no tools
+              </Badge>
+            )}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5 truncate">{provider.base_url}</p>
         </div>
@@ -773,6 +805,91 @@ function ProviderEditor({
         <label htmlFor="provider-active" className="text-sm">
           Active (show in chat model picker)
         </label>
+      </div>
+
+      {/* API endpoint type — controls whether the agent hits
+          /v1/chat/completions (universal, works with every OpenAI-compatible
+          provider including g4f.space) or /v1/responses (OpenAI-direct only).
+          Defaulting to "chat" is what fixes the stuck-at-thinking bug users
+          hit when they pointed the app at g4f.space — that provider doesn't
+          implement /v1/responses and the SSE parser hung forever waiting for
+          a chunk that never came. */}
+      <div>
+        <label className="text-sm font-medium">API endpoint type</label>
+        <p className="text-xs text-muted-foreground mb-2">
+          Most OpenAI-compatible providers (OpenRouter, Groq, Together, Ollama,
+          vLLM, LM Studio, g4f.space, …) only support{" "}
+          <code className="font-mono">/v1/chat/completions</code>. Use the
+          Responses API only when talking to OpenAI directly.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => onChange({ ...draft, model_type: "chat" })}
+            className={`text-left rounded-lg border p-3 transition-colors ${
+              draft.model_type === "chat"
+                ? "border-primary bg-primary/5 ring-1 ring-primary"
+                : "border-foreground/15 hover:border-foreground/30"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  draft.model_type === "chat" ? "bg-primary" : "bg-muted-foreground/40"
+                }`}
+              />
+              <span className="font-medium text-sm">Chat Completions</span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1 ml-4">
+              <code className="font-mono">/v1/chat/completions</code> — works
+              with all providers
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ ...draft, model_type: "responses" })}
+            className={`text-left rounded-lg border p-3 transition-colors ${
+              draft.model_type === "responses"
+                ? "border-primary bg-primary/5 ring-1 ring-primary"
+                : "border-foreground/15 hover:border-foreground/30"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  draft.model_type === "responses" ? "bg-primary" : "bg-muted-foreground/40"
+                }`}
+              />
+              <span className="font-medium text-sm">Responses API</span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1 ml-4">
+              <code className="font-mono">/v1/responses</code> — OpenAI direct only
+            </p>
+          </button>
+        </div>
+      </div>
+
+      {/* Tool calling toggle — when off, NO tools array is sent in the
+          request body. Some providers (notably certain g4f models) reject
+          any request that includes a tools array via HTTP 403, which
+          surfaces as stuck-at-thinking because the SSE stream never starts.
+          With this off the user can still chat in text-only mode. */}
+      <div className="rounded-lg border border-foreground/15 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Tool calling</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Disable if the provider returns 403 errors on tool calls (some
+              g4f / free models). Text-only mode still works for chat — the
+              agent just can&apos;t call create_file, run_python, etc.
+            </p>
+          </div>
+          <Switch
+            id="provider-tools-enabled"
+            checked={draft.tools_enabled}
+            onCheckedChange={(v) => onChange({ ...draft, tools_enabled: v })}
+          />
+        </div>
       </div>
 
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-foreground/10">

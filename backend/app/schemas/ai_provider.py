@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
@@ -12,6 +13,14 @@ class AIProviderBase(BaseModel):
     base_url: str = Field(..., min_length=1, max_length=512)
     models: list[str] = Field(default_factory=list)
     is_active: bool = True
+    # Which OpenAI API surface to call. Defaults to "chat" (universal — works
+    # with every OpenAI-compatible provider). "responses" only works against
+    # OpenAI-direct because no one else implements POST /v1/responses.
+    model_type: Literal["chat", "responses"] = "chat"
+    # When False, the agent registers NO tools on this provider so the
+    # request body has no ``tools`` array. Use this for providers (notably
+    # certain g4f / free models) that 403 on any tool payload.
+    tools_enabled: bool = True
 
 
 class AIProviderCreate(AIProviderBase):
@@ -25,6 +34,8 @@ class AIProviderUpdate(BaseModel):
     api_key: str | None = None
     models: list[str] | None = None
     is_active: bool | None = None
+    model_type: Literal["chat", "responses"] | None = None
+    tools_enabled: bool | None = None
 
 
 class AIProviderRead(AIProviderBase):

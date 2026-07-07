@@ -43,6 +43,10 @@ async def list_models(user: CurrentUser, db: AsyncSession = Depends(get_db_sessi
             "base_url": p.base_url,
             "has_api_key": bool(p.api_key_encrypted),
             "models": list(p.models or []),
+            # Surface these so the WS client knows how to build the agent
+            # for that provider (chat vs responses endpoint; tools on/off).
+            "model_type": getattr(p, "model_type", None) or "chat",
+            "tools_enabled": bool(getattr(p, "tools_enabled", True)),
         }
         for p in providers_raw
     ]

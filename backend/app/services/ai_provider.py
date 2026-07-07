@@ -50,6 +50,8 @@ class AIProviderService:
             api_key=data.api_key,
             models=list(data.models),
             is_active=data.is_active,
+            model_type=data.model_type,
+            tools_enabled=data.tools_enabled,
         )
 
     async def update(

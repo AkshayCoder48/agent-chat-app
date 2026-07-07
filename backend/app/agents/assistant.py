@@ -2,7 +2,7 @@
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.capabilities import (
@@ -73,17 +73,83 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ProviderConfig:
+    """User-configured OpenAI-compatible provider endpoint.
+
+    ``model_type`` selects which OpenAI API surface to call:
+      * ``"chat"``     -> POST /v1/chat/completions  (universal — works with
+        every OpenAI-compatible provider including g4f.space, OpenRouter,
+        Groq, Together, Ollama, vLLM, LM Studio, …). This is the default
+        because most third-party providers do NOT implement the newer
+        Responses API and would silently hang the SSE parser waiting for
+        a chunk that never arrives.
+      * ``"responses"`` -> POST /v1/responses        (OpenAI direct only).
+
+    ``tools_enabled`` controls whether the agent registers its tool suite
+    (workspace ops, code execution, RAG search, charts, ask_user, …) on
+    the model at all. Some providers (notably certain g4f / free models)
+    reject any request that includes a ``tools`` array via HTTP 403 —
+    toggling this off lets the user still chat in text-only mode.
+    """
+
+    base_url: str
+    api_key: str | None
+    model_name: str
+    model_type: Literal["chat", "responses"] = "chat"
+    tools_enabled: bool = True
+
+
+def _build_model_from_provider_config(cfg: ProviderConfig) -> Any:
+    """Build the right pydantic-ai model for a provider configuration.
+
+    Routes to :class:`OpenAIChatModel` (POST /v1/chat/completions) when
+    ``model_type == "chat"`` and :class:`OpenAIResponsesModel` (POST
+    /v1/responses) when ``model_type == "responses"``.
+
+    The Chat Completions path is wrapped with :func:`build_reasoning_aware_client`
+    so non-standard ``delta.reasoning_content`` fields (DeepSeek / Moonshot /
+    g4f) are extracted into a contextvar callback the frontend can render in
+    a separate "Reasoning" block.
+    """
+    resolved_key = cfg.api_key or "unset"
+
+    # Chat Completions — universal endpoint. Wrap with ReasoningAwareTransport
+    # which: (1) filters out empty-choices chunks (the usage-only chunk that
+    # crashes pydantic-ai's parser on some non-standard providers like
+    # g4f.space), and (2) extracts the non-standard ``delta.reasoning_content``
+    # field (DeepSeek / Moonshot / g4f) and emits it via a contextvar callback
+    # so the frontend can render it in a separate "Reasoning" block — distinct
+    # from OpenAI-native reasoning summaries that come through the ``Thinking``
+    # capability.
+    http_client = build_reasoning_aware_client(
+        base_url=cfg.base_url,
+        api_key=resolved_key,
+    )
+    provider = OpenAIProvider(
+        api_key=resolved_key,
+        base_url=cfg.base_url,
+        http_client=http_client,
+    )
+    if cfg.model_type == "responses":
+        return OpenAIResponsesModel(cfg.model_name, provider=provider)
+    return OpenAIChatModel(cfg.model_name, provider=provider)
+
+
 def _build_model(
     model_name: str,
     base_url: str | None = None,
     api_key: str | None = None,
+    model_type: Literal["chat", "responses"] = "chat",
 ) -> Any:
     """Build an OpenAI-compatible model client.
 
     If ``base_url`` + ``api_key`` are provided, route to the user's custom
-    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, …) via
-    :class:`OpenAIChatModel` — most third-party OpenAI-compatible providers
-    only support ``/v1/chat/completions``, not the newer Responses API.
+    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, g4f, …)
+    via :class:`OpenAIChatModel` by default — most third-party OpenAI-compatible
+    providers only support ``/v1/chat/completions``, not the newer Responses
+    API. The ``model_type`` argument lets the user opt into the Responses API
+    for OpenAI-direct (which is the only provider that implements it).
 
     For the default (no base_url), use :class:`OpenAIResponsesModel` against
     the real OpenAI API so we get reasoning summaries, native tools, etc.
@@ -92,30 +158,14 @@ def _build_model(
     resolved_key = api_key or settings.OPENAI_API_KEY
 
     if base_url:
-        # Custom provider — use the chat-completions API. Most third-party
-        # OpenAI-compatible providers (OpenRouter, Groq, Together, Ollama,
-        # vLLM, LM Studio, …) only support /v1/chat/completions, not the
-        # newer Responses API. The OpenAIProvider with a custom base_url
-        # works as the underlying AsyncOpenAI client.
-        #
-        # We wrap the underlying httpx transport with ReasoningAwareTransport
-        # which: (1) filters out empty-choices chunks (the usage-only chunk
-        # that crashes pydantic-ai's parser on some non-standard providers
-        # like g4f.space), and (2) extracts the non-standard
-        # ``delta.reasoning_content`` field (DeepSeek / Moonshot / g4f) and
-        # emits it via a contextvar callback so the frontend can render it
-        # in a separate "Reasoning" block — distinct from OpenAI-native
-        # reasoning summaries that come through the ``Thinking`` capability.
-        http_client = build_reasoning_aware_client(
-            base_url=base_url,
-            api_key=resolved_key or "unset",
+        return _build_model_from_provider_config(
+            ProviderConfig(
+                base_url=base_url,
+                api_key=api_key,
+                model_name=resolved_model,
+                model_type=model_type,
+            )
         )
-        provider = OpenAIProvider(
-            api_key=resolved_key or "unset",
-            base_url=base_url,
-            http_client=http_client,
-        )
-        return OpenAIChatModel(resolved_model, provider=provider)
 
     # Default OpenAI — use the Responses API.
     provider_kwargs: dict[str, Any] = {"api_key": resolved_key}
@@ -148,6 +198,8 @@ class AssistantAgent:
         todo_capability: "TodoCapability | None" = None,
         provider_base_url: str | None = None,
         provider_api_key: str | None = None,
+        provider_model_type: Literal["chat", "responses"] = "chat",
+        provider_tools_enabled: bool = True,
         user_skills_dir: Path | None = None,
         custom_tools: list[dict[str, Any]] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
@@ -156,6 +208,17 @@ class AssistantAgent:
         self.model_name = model_name or settings.AI_MODEL
         self.provider_base_url = provider_base_url
         self.provider_api_key = provider_api_key
+        # ``provider_model_type`` controls whether we hit
+        # POST /v1/chat/completions ("chat" — default, universal) or
+        # POST /v1/responses ("responses" — OpenAI-direct only). Most
+        # third-party providers (g4f.space, OpenRouter, Groq, …) only
+        # implement the chat-completions endpoint; routing them through
+        # OpenAIResponsesModel is the root cause of stuck-at-thinking.
+        self.provider_model_type = provider_model_type
+        # ``provider_tools_enabled`` lets the user disable tool registration
+        # entirely for providers that 403 on the ``tools`` array. Text-only
+        # chat still works — only tool calls are skipped.
+        self.provider_tools_enabled = provider_tools_enabled
         # ``temperature`` stays ``None`` when caller didn't set it — don't fall
         # back to settings.AI_TEMPERATURE here. Reasoning/o-series models
         # (gpt-5.5, o1, …) reject the parameter entirely, so we only forward
@@ -180,6 +243,7 @@ class AssistantAgent:
             self.model_name,
             base_url=self.provider_base_url,
             api_key=self.provider_api_key,
+            model_type=self.provider_model_type,
         )
 
         capabilities: list[Any] = [ReinjectSystemPrompt()]
@@ -212,7 +276,11 @@ class AssistantAgent:
         legacy_skills_dir = Path(__file__).parent.parent.parent / "skills"
         if legacy_skills_dir.exists():
             skills_dirs.append(str(legacy_skills_dir))
-        if skills_dirs:
+        # When the user has explicitly disabled tools for this provider
+        # (provider_tools_enabled=False), skip SkillsToolset too — Skills
+        # register as a toolset and would re-introduce the ``tools`` array
+        # that the provider 403s on.
+        if self.provider_tools_enabled and skills_dirs:
             try:
                 toolsets.append(SkillsToolset(directories=skills_dirs))
             except Exception:
@@ -220,16 +288,19 @@ class AssistantAgent:
 
         # MCP servers — spin up a pydantic-ai toolset per active server.
         # Failures are logged but don't break the chat (the agent just
-        # doesn't see that server's tools).
-        for srv in self.mcp_servers:
-            try:
-                ts = _build_mcp_toolset(srv)
-                if ts is not None:
-                    toolsets.append(ts)
-            except Exception:
-                logger.warning(
-                    "Failed to wire MCP server %s", srv.get("name"), exc_info=True
-                )
+        # doesn't see that server's tools). Skipped entirely when
+        # provider_tools_enabled=False to keep the request body free of
+        # any ``tools`` array.
+        if self.provider_tools_enabled:
+            for srv in self.mcp_servers:
+                try:
+                    ts = _build_mcp_toolset(srv)
+                    if ts is not None:
+                        toolsets.append(ts)
+                except Exception:
+                    logger.warning(
+                        "Failed to wire MCP server %s", srv.get("name"), exc_info=True
+                    )
 
         if self.todo_capability is not None:
             capabilities.append(self.todo_capability)
@@ -242,8 +313,15 @@ class AssistantAgent:
             toolsets=toolsets,
         )
 
-        self._register_tools(agent)
-        self._register_custom_tools(agent)
+        # Tools (workspace ops, RAG, charts, ask_user, code execution, …)
+        # are only registered when provider_tools_enabled is True. Some
+        # providers (notably certain g4f / free models) reject any request
+        # that includes a ``tools`` array via HTTP 403 — skipping tool
+        # registration keeps the request body clean so chat still works
+        # (text-only mode).
+        if self.provider_tools_enabled:
+            self._register_tools(agent)
+            self._register_custom_tools(agent)
 
         return agent
 
@@ -332,10 +410,18 @@ class AssistantAgent:
                     "User interaction is unavailable here; proceed with a reasonable "
                     "assumption and state it briefly."
                 )
-            # Coerce + validate. Many OpenAI-compatible providers serialize the
-            # array as a JSON string with leading whitespace, which fails Pydantic's
-            # list validation. parse_questions handles that and drops bad items
-            # instead of crashing the whole turn.
+            # Coerce + validate. Many OpenAI-compatible providers (notably
+            # g4f and other free relays) serialize the ``questions`` array
+            # as a JSON string instead of a real JSON array, which fails
+            # Pydantic's list validation with "Input should be a valid array".
+            # ``parse_questions`` accepts both shapes (string OR list) and
+            # drops invalid items instead of crashing the whole turn.
+            #
+            # The ``Any`` type hint above is deliberate — it lets pydantic-ai
+            # forward whatever the model sent (string, list, dict) without
+            # rejecting it at the schema-validation layer, then we normalize
+            # here. Using ``list[QuestionItem]`` would 409 the request the
+            # moment a provider sends a JSON string.
             items = parse_questions(questions)
             if not items:
                 return "No questions were provided."
@@ -775,6 +861,8 @@ def get_agent(
     todo_capability: "TodoCapability | None" = None,
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    provider_model_type: Literal["chat", "responses"] = "chat",
+    provider_tools_enabled: bool = True,
     system_prompt: str | None = None,
     user_skills_dir: Path | None = None,
     custom_tools: list[dict[str, Any]] | None = None,
@@ -787,6 +875,8 @@ def get_agent(
         todo_capability=todo_capability,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
+        provider_model_type=provider_model_type,
+        provider_tools_enabled=provider_tools_enabled,
         system_prompt=system_prompt,
         user_skills_dir=user_skills_dir,
         custom_tools=custom_tools,

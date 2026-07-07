@@ -18,6 +18,7 @@ from app.db.models.chat_file import ChatFile  # noqa: F401
 from app.db.models.rag_document import RAGDocument  # noqa: F401
 from app.db.models.sync_log import SyncLog  # noqa: F401
 from app.db.models.sync_source import SyncSource  # noqa: F401
+from app.db.models.ai_provider import AIProvider  # noqa: F401
 
 config = context.config
 
