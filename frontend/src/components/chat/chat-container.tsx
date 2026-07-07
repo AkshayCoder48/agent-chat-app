@@ -225,6 +225,7 @@ export function ChatContainer() {
       pendingQuestions={pendingQuestions}
       onAnswerQuestions={sendAskUserResponses}
       onStop={stopGeneration}
+      conversationId={currentConversationId}
     />
   );
 }
@@ -235,6 +236,8 @@ interface ChatUIProps {
   isProcessing: boolean;
   /** True while a saved conversation is being loaded — show a skeleton, not empty state. */
   isLoadingConversation?: boolean;
+  /** Active conversation id (null = new chat). Used to remount ChatInput on conversation switch. */
+  conversationId?: string | null;
   sendMessage: (
     content: string,
     fileIds?: string[],
@@ -263,6 +266,7 @@ function ChatUI({
   isConnected,
   isProcessing,
   isLoadingConversation,
+  conversationId,
   sendMessage,
   onModelChange,
   onProviderChange,
@@ -326,7 +330,7 @@ function ChatUI({
           <div className="bg-card border-border focus-within:border-foreground/30 rounded-2xl border transition-colors">
             <div className="px-3 pt-3 sm:px-4 sm:pt-4">
               <ChatInput
-                key={currentConversationId ?? "new-chat"}
+                key={conversationId ?? "new-chat"}
                 onSend={sendMessage}
                 disabled={
                   !isConnected ||
