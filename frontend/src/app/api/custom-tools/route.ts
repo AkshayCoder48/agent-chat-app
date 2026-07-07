@@ -48,21 +48,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/**
- * GET /api/custom-tools/catalog
- * (Handled by the [tool_id] route — but catalog is a separate path, so we
- * route it explicitly here when no [tool_id] is given.)
- */
-export async function catalogGET(request: NextRequest) {
-  try {
-    const data = await backendFetch(`/api/v1/custom-tools/catalog`, {
-      headers: { ...authHeaders(request) },
-    });
-    return NextResponse.json(data);
-  } catch (error) {
-    if (error instanceof BackendApiError) {
-      return NextResponse.json({ detail: error.message }, { status: error.status });
-    }
-    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
-  }
-}
+/* Note: The catalog endpoint lives at /api/custom-tools/catalog/route.ts.
+   Next.js only allows HTTP verb exports (GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS)
+   in route.ts files, so we MUST NOT export catalogGET here. */
