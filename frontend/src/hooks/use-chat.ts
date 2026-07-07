@@ -232,7 +232,11 @@ export function useChat(options: UseChatOptions = {}) {
               const msg = msgs[i];
               if (!msg?.parts) continue;
               for (const p of msg.parts) {
-                if (p.type === "tool" && p.toolCall?.id === data.tool_call_id) {
+                if (
+                  p.type === "tool" &&
+                  p.toolCall?.id === data.tool_call_id &&
+                  p.toolCall
+                ) {
                   window.dispatchEvent(
                     new CustomEvent("tool_result", {
                       detail: { tool_name: p.toolCall.name },
