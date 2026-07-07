@@ -33,6 +33,47 @@ class LifespanState(TypedDict, total=False):
     vector_store: BaseVectorStore
 
 
+def _run_migrations_on_startup() -> None:
+    """Run Alembic migrations to head.
+
+    Imported lazily so the rest of the app can boot even if alembic or its
+    config is unavailable. Runs synchronously in a thread to avoid blocking
+    the event loop.
+    """
+    import asyncio
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Skip when explicitly disabled (e.g. for tests or local dev where the
+    # developer wants to control migration timing).
+    if os.environ.get("SKIP_AUTO_MIGRATIONS", "").lower() in {"1", "true", "yes"}:
+        logger.info("Skipping auto-migrations (SKIP_AUTO_MIGRATIONS set)")
+        return
+
+    def _do_upgrade() -> None:
+        from alembic import command
+        from alembic.config import Config
+
+        # alembic.ini lives at the repo root (backend/), and the working
+        # directory at startup is /app (the backend root in the container).
+        cfg = Config("alembic.ini")
+        # Stamp the version table if it doesn't exist yet — without this,
+        # `upgrade head` on a fresh DB would try to run every migration from
+        # scratch, which is what we want.
+        command.upgrade(cfg, "head")
+
+    try:
+        # Run in a thread so we don't block the event loop on the (sync)
+        # alembic command. The pool is small because this is one-shot.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_do_upgrade)
+            future.result(timeout=120)  # 2-minute ceiling
+        logger.info("Auto-migrations applied successfully")
+    except Exception as exc:
+        logger.warning("Auto-migration failed: %s", exc, exc_info=True)
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[LifespanState, None]:
     """Application lifespan - startup and shutdown events.
@@ -44,6 +85,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[LifespanState, None]:
     setup_logfire()
     instrument_asyncpg()
     instrument_pydantic_ai()
+
+    # Auto-run Alembic migrations on startup so HF Space / single-instance
+    # deploys don't require a manual `agent_chat_app db upgrade` step.
+    # Failures are logged but don't abort startup — the app may still be
+    # partially functional (e.g. for routes that don't touch the new column).
+    try:
+        _run_migrations_on_startup()
+    except Exception as exc:
+        logger.warning("Startup migration failed (continuing anyway): %s", exc)
+
     embedder: EmbeddingService | None = None
     try:
         embedder = EmbeddingService(settings=settings.rag)
