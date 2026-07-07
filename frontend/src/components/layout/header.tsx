@@ -3,22 +3,14 @@
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import {
-  Activity,
-  Building2,
   ChevronDown,
-  CreditCard,
-  Database,
   LayoutDashboard,
   LogOut,
   Menu,
   MessageSquare,
-  Receipt,
   Search,
   Settings,
-  ShieldCheck,
   Sparkles,
-  Star,
-  Users,
   UserCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -39,70 +31,15 @@ import {
 import { useAuth } from "@/hooks";
 import { useActiveRoute } from "@/lib/active-route";
 import { APP_NAME, ROUTES } from "@/lib/constants";
-import { cn, isAppAdmin } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useAuthStore, useSidebarStore } from "@/stores";
 
-type NavLeaf = { labelKey: string; href: string; icon: LucideIcon; descKey?: string };
-type NavEntry =
-  | { kind: "link"; labelKey: string; href: string; icon: LucideIcon; adminOnly?: boolean }
-  | { kind: "menu"; labelKey: string; icon: LucideIcon; adminOnly?: boolean; items: NavLeaf[] };
+type NavEntry = { labelKey: string; href: string; icon: LucideIcon };
 
 const NAV: NavEntry[] = [
-  { kind: "link", labelKey: "dashboard", href: ROUTES.DASHBOARD, icon: LayoutDashboard },
-  { kind: "link", labelKey: "chat", href: ROUTES.CHAT, icon: MessageSquare },
-  {
-    kind: "menu",
-    labelKey: "admin",
-    icon: ShieldCheck,
-    adminOnly: true,
-    items: [
-      { labelKey: "overview", href: ROUTES.ADMIN, icon: LayoutDashboard },
-      { labelKey: "users", href: ROUTES.ADMIN_USERS, icon: Users },
-      { labelKey: "conversations", href: ROUTES.ADMIN_CONVERSATIONS, icon: MessageSquare },
-      { labelKey: "ratings", href: ROUTES.ADMIN_RATINGS, icon: Star },
-      { labelKey: "systemHealth", href: ROUTES.ADMIN_SYSTEM, icon: Activity },
-    ],
-  },
+  { labelKey: "dashboard", href: ROUTES.DASHBOARD, icon: LayoutDashboard },
+  { labelKey: "chat", href: ROUTES.CHAT, icon: MessageSquare },
 ];
-
-function NavMenu({ entry }: { entry: Extract<NavEntry, { kind: "menu" }> }) {
-  const isActive = useActiveRoute();
-  const t = useTranslations("nav");
-  const active = entry.items.some((i) => isActive(i.href));
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors outline-none",
-            active
-              ? "bg-foreground/5 text-foreground"
-              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
-          )}
-        >
-          <entry.icon className="h-3.5 w-3.5" />
-          {t(entry.labelKey)}
-          <ChevronDown className="h-3 w-3 opacity-60" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60">
-        {entry.items.map((item) => (
-          <DropdownMenuItem key={item.href} asChild>
-            <Link href={item.href} className="flex items-start gap-2.5">
-              <item.icon className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
-              <span className="flex flex-col">
-                <span className="text-sm font-medium">{t(item.labelKey)}</span>
-                {item.descKey && (
-                  <span className="text-muted-foreground text-xs">{t(item.descKey)}</span>
-                )}
-              </span>
-            </Link>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 export function Header() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -111,7 +48,6 @@ export function Header() {
   const isActive = useActiveRoute();
   const t = useTranslations("nav");
   const tc = useTranslations("common");
-  const isAdmin = isAppAdmin(user);
 
   const openSearch = () => window.dispatchEvent(new CustomEvent("command-palette:open"));
 
@@ -138,26 +74,22 @@ export function Header() {
           </Link>
 
           <nav className="hidden items-center gap-0.5 lg:flex">
-            {NAV.filter((e) => !e.adminOnly || isAdmin).map((entry) =>
-              entry.kind === "link" ? (
-                <Link
-                  key={entry.href}
-                  href={entry.href}
-                  aria-current={isActive(entry.href) ? "page" : undefined}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                    isActive(entry.href)
-                      ? "bg-foreground/5 text-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
-                  )}
-                >
-                  <entry.icon className="h-3.5 w-3.5" />
-                  {t(entry.labelKey)}
-                </Link>
-              ) : (
-                <NavMenu key={entry.labelKey} entry={entry} />
-              ),
-            )}
+            {NAV.map((entry) => (
+              <Link
+                key={entry.href}
+                href={entry.href}
+                aria-current={isActive(entry.href) ? "page" : undefined}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                  isActive(entry.href)
+                    ? "bg-foreground/5 text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                )}
+              >
+                <entry.icon className="h-3.5 w-3.5" />
+                {t(entry.labelKey)}
+              </Link>
+            ))}
           </nav>
         </div>
 

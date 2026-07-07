@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Command } from "cmdk";
 import {
-  Activity,
   ArrowRight,
   Bell,
   BookOpen,
@@ -19,7 +18,6 @@ import {
   Settings,
   Shield,
   Slash,
-  Star,
   UserCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -27,7 +25,7 @@ import type { LucideIcon } from "lucide-react";
 import { useAuth } from "@/hooks";
 import { apiClient } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
-import { isAppAdmin } from "@/lib/utils";
+// (admin menu items removed — the app no longer ships admin surfaces)
 
 interface ConversationItem {
   id: string;
@@ -38,7 +36,7 @@ interface ConversationItem {
 export function CommandPalette() {
   const router = useRouter();
   const t = useTranslations("nav");
-  const { user, logout } = useAuth();
+  const { logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -175,20 +173,6 @@ export function CommandPalette() {
             onSelect={() => go(ROUTES.SETTINGS_SLASH_COMMANDS)}
           />
         </Group>
-        {isAppAdmin(user) && (
-          <Group heading={t("admin")}>
-            <PaletteItem
-              icon={Star}
-              label={t("responseRatings")}
-              onSelect={() => go(ROUTES.ADMIN_RATINGS)}
-            />
-            <PaletteItem
-              icon={Activity}
-              label={t("allConversations")}
-              onSelect={() => go(ROUTES.ADMIN_CONVERSATIONS)}
-            />
-          </Group>
-        )}
 
         <Group heading={t("account")}>
           <PaletteItem

@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ detail: "Missing path" }, { status: 400 });
   }
   const resp = await fetch(
-    `${BACKEND_URL}/api/v1/workspace/files/download-folder?path=${encodeURIComponent(path)}`,
+    `${BACKEND_URL}/api/v1/files/workspace/download-folder?path=${encodeURIComponent(path)}`,
     { headers: { ...authHeaders(request) } }
   );
   if (!resp.ok) {

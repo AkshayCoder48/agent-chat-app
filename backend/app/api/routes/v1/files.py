@@ -217,3 +217,104 @@ async def list_workspace(
             }
         )
     return {"path": path, "entries": entries}
+
+
+# --------------------------------------------------------------- workspace (self)
+# Same as the ``/workspace/{user_id}`` routes above, but the user_id is
+# inferred from the auth token. The frontend file sidebar uses these — it
+# doesn't know the user's UUID, only that it's the logged-in user.
+
+
+@router.get("/workspace/list", response_model=None)
+async def list_own_workspace(
+    current_user: CurrentUser,
+    path: str = Query(".", description="Relative path inside the user's workspace"),
+) -> Any:
+    """List the contents of the calling user's workspace directory."""
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+    if target.is_file():
+        return {
+            "path": path,
+            "absolute": str(target),
+            "parent": str(target.parent.relative_to(root)) if target.parent != root else None,
+            "entries": [
+                {"name": target.name, "type": "file", "size": target.stat().st_size}
+            ],
+        }
+
+    entries: list[dict[str, Any]] = []
+    for child in sorted(target.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
+        try:
+            st = child.stat()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": child.name,
+                "type": "folder" if child.is_dir() else "file",
+                "size": st.st_size if child.is_file() else None,
+            }
+        )
+    parent_rel = (
+        str(target.parent.relative_to(root)) if target != root and target.parent != root else None
+    )
+    return {
+        "path": path,
+        "absolute": str(target),
+        "parent": parent_rel,
+        "entries": entries,
+    }
+
+
+@router.get("/workspace/download")
+async def download_own_workspace_file(
+    current_user: CurrentUser,
+    path: str = Query(..., description="Relative path inside the user's workspace"),
+) -> Any:
+    """Serve a single file from the calling user's workspace."""
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    headers = {
+        "Content-Disposition": f'inline; filename="{target.name}"',
+        "X-Frame-Options": "SAMEORIGIN",
+        "Content-Security-Policy": "frame-ancestors 'self'",
+    }
+    return FileResponse(path=str(target), filename=target.name, headers=headers)
+
+
+@router.get("/workspace/download-folder")
+async def download_own_workspace_folder(
+    current_user: CurrentUser,
+    path: str = Query(..., description="Relative folder path inside the user's workspace"),
+) -> Any:
+    """Zip a folder from the calling user's workspace and stream it back."""
+    import asyncio
+
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists() or not target.is_file():
+        # Allow zipping the root too — but require it to be a directory.
+        if not target.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    elif target.is_file():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is a file, not a folder")
+
+    return await asyncio.to_thread(zip_folder, root, target)

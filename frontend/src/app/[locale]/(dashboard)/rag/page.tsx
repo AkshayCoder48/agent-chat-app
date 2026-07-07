@@ -1,10 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks";
-import { ROUTES } from "@/lib/constants";
 import {
   Button,
   Input,
@@ -69,7 +67,7 @@ import { apiClient } from "@/lib/api-client";
 import { PageHeader } from "@/components/dashboard/page-header";
 
 import { BACKEND_URL } from "@/lib/constants";
-import { getErrorMessage, isAppAdmin, MAX_UPLOAD_SIZE_MB, timeAgo } from "@/lib/utils";
+import { getErrorMessage, MAX_UPLOAD_SIZE_MB, timeAgo } from "@/lib/utils";
 
 interface CollectionWithInfo {
   name: string;
@@ -90,14 +88,7 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 export default function RAGPage() {
-  const { user } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (user && !isAppAdmin(user)) {
-      router.replace(ROUTES.CHAT);
-    }
-  }, [user, router]);
+  useAuth();
 
   const [collections, setCollections] = useState<CollectionWithInfo[]>([]);
   const [selected, setSelected] = useState<string>("");

@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Database, List, MessageSquare, Plus, Star } from "lucide-react";
+import { Database, MessageSquare, Plus } from "lucide-react";
 import { OnboardingBanner } from "@/components/dashboard/onboarding-banner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { QuickActions } from "@/components/dashboard/quick-actions";
@@ -14,7 +13,7 @@ import { useAuth } from "@/hooks";
 import { apiClient } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
 import { getCollectionInfo, listCollections } from "@/lib/rag-api";
-import { cn, isAppAdmin } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { HealthResponse } from "@/types";
 interface ConversationsResponse {
   total?: number;
@@ -136,55 +135,6 @@ export default function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2"></div>
 
       <QuickActions />
-
-      {isAppAdmin(user) && (
-        <div>
-          <h2 className="font-display text-foreground mb-3 text-base font-semibold">
-            Admin actions
-          </h2>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <AdminTile
-              icon={Star}
-              label="Response ratings"
-              description="View and manage ratings"
-              href={ROUTES.ADMIN_RATINGS}
-            />
-            <AdminTile
-              icon={List}
-              label="All conversations"
-              description="Inspect any user's chats"
-              href={ROUTES.ADMIN_CONVERSATIONS}
-            />
-          </div>
-        </div>
-      )}
     </div>
-  );
-}
-
-function AdminTile({
-  icon: Icon,
-  label,
-  description,
-  href,
-}: {
-  icon: typeof Star;
-  label: string;
-  description: string;
-  href: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="border-border hover:border-foreground/30 bg-card hover:bg-accent flex items-center gap-3 rounded-xl border p-4 transition-colors"
-    >
-      <span className="bg-foreground/8 text-foreground flex h-9 w-9 items-center justify-center rounded-full">
-        <Icon className="h-4 w-4" />
-      </span>
-      <div className="flex-1">
-        <p className="text-foreground text-sm font-semibold">{label}</p>
-        <p className="text-muted-foreground text-xs">{description}</p>
-      </div>
-    </Link>
   );
 }
