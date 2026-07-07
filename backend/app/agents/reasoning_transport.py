@@ -90,6 +90,22 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._wrapped.handle_async_request(request)
+        # ``httpx.AsyncHTTPTransport.handle_async_request`` does NOT populate
+        # ``response.request`` — the httpx CLIENT sets that attribute later
+        # in ``_send_single_request``. But our transport wraps the response
+        # BEFORE the client gets a chance, so we must set ``response.request``
+        # ourselves. Otherwise ``httpx.Response.__init__`` raises
+        # ``RuntimeError: The request instance has not been set on this response.``
+        # when we try to build a new Response with ``request=response.request``
+        # in ``_wrap_stream_response`` below — which surfaces in pydantic-ai
+        # as the generic ``"Connection error."``.
+        #
+        # We can't check ``response.request is None`` directly because httpx's
+        # ``request`` property RAISES RuntimeError when the underlying
+        # ``_request`` attribute is None. Access the private ``_request``
+        # attribute directly to safely detect the unset state.
+        if getattr(response, "_request", None) is None:
+            response._request = request  # type: ignore[attr-defined]
         # Only intercept streaming chat-completions responses.
         path = request.url.path
         if not (path.endswith("/chat/completions") or path.endswith("/chat/completions/")):
@@ -483,8 +499,13 @@ def build_reasoning_aware_client(
         # follow_redirects, the request fails with a 3xx and the openai
         # SDK wraps it as "Connection error.".
         follow_redirects=True,
-        # g4f.space drops the socket after the first SSE stream —
-        # a second request on the same keep-alive socket raises
-        # RemoteProtocolError. Force a fresh socket per request.
-        keepalive_expiry=0.0,
+        # g4f.space drops the socket after the first SSE stream — a second
+        # request on the same keep-alive socket raises RemoteProtocolError.
+        # Force a fresh socket per request via httpx.Limits (NOT a top-level
+        # kwarg — ``keepalive_expiry`` lives inside ``limits``).
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=0,
+            keepalive_expiry=0.0,
+        ),
     )

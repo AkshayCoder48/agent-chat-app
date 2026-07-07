@@ -57,6 +57,12 @@ def _format_agent_error(exc: BaseException) -> str:
 
     Consecutive frames with identical messages are collapsed (the openai
     SDK often re-wraps the httpx error with the same string).
+
+    We ALWAYS include the exception type — even for single-frame errors —
+    because the bare message "Connection error." gives the user zero
+    diagnostic info. Seeing "APIConnectionError: Connection error." at
+    least tells them it's a network-level failure vs. an auth failure
+    vs. a parser failure.
     """
     parts: list[str] = []
     cur: BaseException | None = exc
@@ -71,13 +77,7 @@ def _format_agent_error(exc: BaseException) -> str:
         # __context__ (implicit chaining during exception handling).
         cur = cur.__cause__ or cur.__context__
         depth += 1
-    # Single frame — return the bare message (cleaner in the UI).
-    if len(parts) == 1:
-        # Just the message, no type prefix — preserves historical UX for
-        # simple errors like "Email already registered".
-        only = parts[0]
-        return only.split(": ", 1)[1] if ": " in only else only
-    return " → ".join(parts)
+    return " → ".join(parts) if parts else f"{type(exc).__name__}: {exc}"
 
 
 class AgentSession:
