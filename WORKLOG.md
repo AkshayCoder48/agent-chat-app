@@ -580,3 +580,79 @@ if isinstance(data.get("questions"), str):
 - `frontend/src/stores/chat-store.ts` (`appendReasoningDelta` action)
 - `frontend/src/hooks/use-chat.ts` (handle `reasoning_delta` event)
 - `frontend/src/components/chat/message-item.tsx` (`ReasoningBlock` component + render `reasoning` parts)
+
+---
+
+## fix(parser): buffer-level CRLF normalization — root cause of stuck-at-thinking
+
+### What
+- **Root cause of "stuck at thinking" found and fixed.** The
+  `ReasoningAwareTransport` was doing CRLF→LF normalization on
+  individual httpx chunks, but when chunks arrive at byte boundaries
+  (especially 1-byte-at-a-time from some providers/proxies), no
+  single chunk ever contains the two-byte sequence `\r\n`. The buffer
+  therefore accumulated raw `\r\n\r\n` SSE separators that never
+  matched the `b"\n\n"` split pattern, so NO events were ever yielded
+  to the OpenAI SDK. The SDK buffered silently waiting for the first
+  event, the agent never produced any `text_delta` / `thinking_delta`
+  WS frames, and the chat was stuck at "Thinking…" indefinitely.
+- Verified with a smoke test (`scripts/test_reasoning_transport.py`
+  — but note: this script lives outside the repo, in
+  `/home/z/my-project/scripts/`). The test feeds a synthetic
+  g4f.space-style stream (CRLF line endings, byte-at-a-time arrival)
+  through the transport. **Before the fix: 0 bytes yielded to the
+  SDK. After the fix: all events flow through correctly, reasoning
+  deltas extracted, usage chunk dropped, [DONE] forwarded.**
+- Fix: normalize CRLF on the BUFFER (not on individual chunks). This
+  is the only correct approach because SSE chunks can arrive at any
+  byte boundary.
+
+### Hopx key save 'Failed to save' fix
+- Was hiding the real backend error behind a generic string. Now
+  surfaces the actual FastAPI error message via the existing
+  `extractBackendErrorMessage` helper, and special-cases 401 with a
+  "session expired" message.
+
+### Silent 401 recovery
+- Every Settings API route (sandbox-keys, system-prompt, env-vars
+  + env-vars/[name]) now uses the new shared `authedBackendFetch`
+  helper. On 401 it silently hits `/api/auth/me` (which uses the
+  httpOnly refresh_token cookie to mint a new access_token), retries
+  the original request once, and forwards the rotated cookie to the
+  browser. An expired 15-minute access token no longer bricks every
+  save in the Settings UI as long as the 7-day refresh token is
+  still valid.
+
+### Other transport hardening
+- Forces `Content-Type: text/event-stream` on intercepted responses
+  (some providers set `application/json` even for streams, which
+  made the OpenAI SDK buffer the whole body).
+- Defensively intercepts responses with unknown/missing content-type
+  (some proxies strip the header).
+- Wraps `_transform_event` in try/except so a single bad event can
+  never kill the whole stream — bad events are passed through
+  unchanged.
+- Drops chunks with `null` choices (not just empty list) — some
+  providers send `choices: null` for the usage chunk.
+
+### Files changed (7)
+- `backend/app/agents/reasoning_transport.py` (buffer-level CRLF
+  normalization, content-type forcing, defensive try/except, null
+  choices handling)
+- `frontend/src/lib/authed-backend-fetch.ts` (new shared helper for
+  401-refresh + real error surfacing)
+- `frontend/src/app/api/agent-settings/sandbox-keys/route.ts`
+  (uses shared helper)
+- `frontend/src/app/api/agent-settings/system-prompt/route.ts`
+  (uses shared helper)
+- `frontend/src/app/api/agent-settings/env-vars/route.ts`
+  (uses shared helper)
+- `frontend/src/app/api/agent-settings/env-vars/[name]/route.ts`
+  (uses shared helper)
+- `frontend/src/app/[locale]/(dashboard)/settings/config/page.tsx`
+  (HopxConfigSection + OtherApiKeysSection + SystemPromptSection
+  now surface real backend errors instead of "Failed to save")
+
+### Commit
+- `5e4b930` on `main` — pushed to GitHub; HF Space + Vercel will
+  auto-deploy.
