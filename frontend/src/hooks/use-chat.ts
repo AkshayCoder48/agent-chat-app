@@ -41,6 +41,7 @@ export function useChat(options: UseChatOptions = {}) {
     updateMessage,
     appendTextDelta,
     appendThinkingDelta,
+    appendReasoningDelta,
     addToolCallPart,
     updateToolCallPart,
     clearMessages,
@@ -181,6 +182,24 @@ export function useChat(options: UseChatOptions = {}) {
           if (currentMessageIdRef.current) {
             const content = (wsEvent.data as { index: number; content: string }).content;
             appendThinkingDelta(currentMessageIdRef.current, content);
+          }
+          break;
+        }
+
+        case "reasoning_delta": {
+          // DeepSeek/Moonshot/g4f-style ``reasoning_content`` field. Same
+          // shape as thinking_delta but rendered in a separate "Reasoning"
+          // block so the user can tell OpenAI-native reasoning apart from
+          // the non-standard ``reasoning_content`` field that some
+          // OpenAI-compatible providers stream. The backend's
+          // ReasoningAwareTransport strips the field from SSE chunks before
+          // pydantic-ai sees them and emits it here via a side-channel.
+          if (!currentMessageIdRef.current) {
+            createNewMessage("");
+          }
+          if (currentMessageIdRef.current) {
+            const content = (wsEvent.data as { index: number; content: string }).content;
+            appendReasoningDelta(currentMessageIdRef.current, content);
           }
           break;
         }
@@ -369,6 +388,7 @@ export function useChat(options: UseChatOptions = {}) {
       updateMessage,
       appendTextDelta,
       appendThinkingDelta,
+      appendReasoningDelta,
       addToolCallPart,
       updateToolCallPart,
       setCurrentConversationId,

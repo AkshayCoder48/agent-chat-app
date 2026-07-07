@@ -519,3 +519,64 @@ if isinstance(data.get("questions"), str):
 - `frontend/src/stores/research-store.ts` (real implementation)
 - `frontend/src/app/[locale]/(dashboard)/settings/{config,skills,mcps,tools,plugins,layout}/page.tsx` (full rewrites)
 - `frontend/src/app/globals.css` (scroll-padding-top)
+
+---
+
+## reasoning_content UI + non-standard OpenAI-compatible API parser fix
+
+### What
+- Frontend: new `reasoning` MessagePart type + `reasoning_delta` WS event
+  + `appendReasoningDelta` chat-store action + `ReasoningBlock` component
+  (visually identical to `ThinkingBlock` but labeled "Reasoning" and
+  bordered dashed to distinguish OpenAI-native thinking from the
+  non-standard `reasoning_content` field that some providers stream).
+- Backend: new `app/agents/reasoning_transport.py` — a custom
+  `httpx.AsyncBaseTransport` that wraps the OpenAI client's HTTP layer for
+  custom-provider turns. Two jobs:
+    1. **Parser robustness** — drops chunks with empty `choices` (the
+       usage-only chunk that g4f.space and similar providers emit at the
+       end; pydantic-ai's parser crashes on `choices[0]` lookup there).
+    2. **reasoning_content extraction** — strips `delta.reasoning_content`
+       (and the shorter `delta.reasoning`) from SSE chunks BEFORE
+       pydantic-ai sees them, and emits each delta via a contextvar
+       callback so the frontend gets a `reasoning_delta` WS event.
+- Backend: `agent_session.process_message` now sets the per-turn reasoning
+  callback (bound to the live WebSocket) before the agent run, and clears
+  it in a `finally` block. The callback is a no-op for default-OpenAI
+  turns (where the transport isn't wired).
+- Backend: `assistant._build_model` passes the wrapped httpx client to
+  `OpenAIProvider(http_client=...)` only for custom-provider turns.
+
+### Why
+- The user reported that AI providers like `g4f.space` return
+  OpenAI-shaped SSE but with a final `choices: []` chunk carrying only
+  usage data. The existing parser crashed on this. The new transport
+  filters those chunks out.
+- These providers also stream `delta.reasoning_content` (DeepSeek /
+  Moonshot / g4f convention). The user wanted this rendered in a
+  separate collapsible block — distinct from OpenAI-native reasoning
+  summaries that come through the `Thinking` capability. The new
+  `ReasoningBlock` component handles that.
+- "Keep the previous parser with this one both should be used" — the
+  existing thinking/text parsers are untouched. Both run side-by-side:
+  `delta.content` → text bubble, OpenAI-native reasoning → ThinkingBlock,
+  `delta.reasoning_content` → ReasoningBlock.
+
+### g4f.space is NOT natively integrated
+- Per the user's explicit request, `g4f.space` is NOT added as a
+  built-in/native provider. Users can still add it themselves via
+  Settings → AI Providers as a custom OpenAI-compatible provider
+  (base_url `https://g4f.space/v1`, their `gfs_…` API key, the model
+  name from g4f's catalog). The new transport kicks in automatically
+  for any custom provider, so the parser fix and reasoning_content
+  extraction work for g4f.space and every other non-standard
+  OpenAI-compatible API the user plugs in.
+
+### Files modified (5)
+- `backend/app/agents/reasoning_transport.py` (new — 234 lines)
+- `backend/app/agents/assistant.py` (wrap httpx client for custom providers)
+- `backend/app/services/agent_session.py` (bind per-turn reasoning callback)
+- `frontend/src/types/chat.ts` (`reasoning` part type, `reasoning_delta` event, `reasoning?: string` on ChatMessage)
+- `frontend/src/stores/chat-store.ts` (`appendReasoningDelta` action)
+- `frontend/src/hooks/use-chat.ts` (handle `reasoning_delta` event)
+- `frontend/src/components/chat/message-item.tsx` (`ReasoningBlock` component + render `reasoning` parts)

@@ -27,6 +27,7 @@ from pydantic_ai.settings import ModelSettings
 from app.agents.prompts import DEFAULT_SYSTEM_PROMPT
 from app.agents.prompts import get_system_prompt_with_rag
 from app.agents.prompts import build_user_system_prompt
+from app.agents.reasoning_transport import build_reasoning_aware_client
 from pydantic_ai_todo import TodoCapability
 from app.agents.tools.ask_user_tool import MAX_QUESTIONS, QuestionItem, format_answers, parse_questions
 from app.agents.utils import get_current_datetime
@@ -96,9 +97,23 @@ def _build_model(
         # vLLM, LM Studio, …) only support /v1/chat/completions, not the
         # newer Responses API. The OpenAIProvider with a custom base_url
         # works as the underlying AsyncOpenAI client.
+        #
+        # We wrap the underlying httpx transport with ReasoningAwareTransport
+        # which: (1) filters out empty-choices chunks (the usage-only chunk
+        # that crashes pydantic-ai's parser on some non-standard providers
+        # like g4f.space), and (2) extracts the non-standard
+        # ``delta.reasoning_content`` field (DeepSeek / Moonshot / g4f) and
+        # emits it via a contextvar callback so the frontend can render it
+        # in a separate "Reasoning" block — distinct from OpenAI-native
+        # reasoning summaries that come through the ``Thinking`` capability.
+        http_client = build_reasoning_aware_client(
+            base_url=base_url,
+            api_key=resolved_key or "unset",
+        )
         provider = OpenAIProvider(
             api_key=resolved_key or "unset",
             base_url=base_url,
+            http_client=http_client,
         )
         return OpenAIChatModel(resolved_model, provider=provider)
 

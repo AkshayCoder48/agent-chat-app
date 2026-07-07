@@ -39,6 +39,12 @@ export interface ChatMessage {
   /** Reasoning trace from extended-thinking models. Rendered dimmed +
    *  collapsible above the final response. */
   thinking?: string;
+  /** DeepSeek/Moonshot/g4f-style ``reasoning_content`` field. Rendered in a
+   *  separate "Reasoning" block (visually similar to Thinking) so the user
+   *  can distinguish OpenAI-native reasoning (``thinking``) from the
+   *  non-standard ``reasoning_content`` field that some OpenAI-compatible
+   *  providers stream. */
+  reasoning?: string;
   /** Ordered timeline of the assistant turn: reasoning, text and tool
    *  calls in the exact order they occurred. Rendered in sequence so a
    *  multi-step turn (think → tools → text → think → tools → text) shows
@@ -55,7 +61,7 @@ export interface ToolCall {
   status: "pending" | "running" | "completed" | "error";
 }
 
-export type MessagePartType = "thinking" | "text" | "tool";
+export type MessagePartType = "thinking" | "text" | "tool" | "reasoning";
 
 /** One ordered segment of an assistant turn. */
 export interface MessagePart {
@@ -118,6 +124,7 @@ export type WSEventType =
   | "part_start"
   | "text_delta"
   | "thinking_delta"
+  | "reasoning_delta"
   | "tool_call_delta"
   | "call_tools_start"
   | "tool_call"

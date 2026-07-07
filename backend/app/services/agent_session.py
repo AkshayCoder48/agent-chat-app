@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
 )
 
 from app.agents.assistant import Deps, get_agent
+from app.agents.reasoning_transport import reset_reasoning_callback, set_reasoning_callback
 from app.agents.todo_integration import TodoSessionIntegration
 from app.services.agent import (
     build_message_history,
@@ -285,11 +286,27 @@ class AgentSession:
             model_history = build_message_history(self.conversation_history)
             user_input = await self._build_multimodal_input(user_message, file_ids)
 
-            collected_tool_calls: list[dict[str, Any]] = []
-            async with assistant.agent.iter(
-                user_input, deps=self.deps, message_history=model_history
-            ) as agent_run:
-                await self._stream_agent_run(agent_run, user_message, collected_tool_calls)
+            # Bind a per-turn reasoning callback so ReasoningAwareTransport
+            # (only active for custom-provider turns) can stream
+            # ``reasoning_content`` deltas straight to the client as
+            # ``reasoning_delta`` WS events. The previous thinking/text
+            # parsers are untouched — both run side-by-side.
+            async def _emit_reasoning_delta(content: str) -> None:
+                await send_event(
+                    self.websocket,
+                    "reasoning_delta",
+                    {"index": 0, "content": content},
+                )
+
+            reasoning_token = set_reasoning_callback(_emit_reasoning_delta)
+            try:
+                collected_tool_calls: list[dict[str, Any]] = []
+                async with assistant.agent.iter(
+                    user_input, deps=self.deps, message_history=model_history
+                ) as agent_run:
+                    await self._stream_agent_run(agent_run, user_message, collected_tool_calls)
+            finally:
+                reset_reasoning_callback(reasoning_token)
 
             # Update in-memory history only after a complete agent run
             if agent_run.result is not None:

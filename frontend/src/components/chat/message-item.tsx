@@ -44,6 +44,34 @@ function ThinkingBlock({
   );
 }
 
+function ReasoningBlock({
+  text,
+  open,
+  isStreaming,
+}: {
+  text: string;
+  open: boolean;
+  isStreaming: boolean;
+}) {
+  return (
+    <details
+      className="border-foreground/10 bg-muted/30 group rounded-2xl rounded-tl-sm border border-dashed px-3 py-2 sm:px-4"
+      open={open}
+    >
+      <summary className="text-foreground/55 hover:text-foreground/80 flex cursor-pointer items-center gap-2 font-mono text-[10px] tracking-wider uppercase select-none">
+        <span className="bg-foreground/30 inline-block h-1.5 w-1.5 rounded-full" />
+        Reasoning
+        {isStreaming && (
+          <span className="bg-foreground/40 inline-block h-1 w-1 animate-pulse rounded-full" />
+        )}
+      </summary>
+      <pre className="text-foreground/65 mt-2 max-h-72 overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+        {text}
+      </pre>
+    </details>
+  );
+}
+
 function TextBubble({
   text,
   showCursor,
@@ -262,6 +290,16 @@ export function MessageItem({ message, groupPosition, onRegenerate }: MessageIte
                       />
                     );
                   }
+                  if (part.type === "reasoning" && part.content) {
+                    return (
+                      <ReasoningBlock
+                        key={part.id}
+                        text={part.content}
+                        open={Boolean(message.isStreaming) && i === parts.length - 1}
+                        isStreaming={Boolean(message.isStreaming)}
+                      />
+                    );
+                  }
                   if (part.type === "tool" && part.toolCall) {
                     return (
                       <div key={part.id} className="w-full">
@@ -288,6 +326,13 @@ export function MessageItem({ message, groupPosition, onRegenerate }: MessageIte
                   {!isUser && message.thinking && (
                     <ThinkingBlock
                       text={message.thinking}
+                      open={Boolean(message.isStreaming)}
+                      isStreaming={Boolean(message.isStreaming)}
+                    />
+                  )}
+                  {!isUser && message.reasoning && (
+                    <ReasoningBlock
+                      text={message.reasoning}
                       open={Boolean(message.isStreaming)}
                       isStreaming={Boolean(message.isStreaming)}
                     />

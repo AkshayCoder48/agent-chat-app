@@ -59,6 +59,11 @@ interface ChatState {
   appendTextDelta: (messageId: string, text: string) => void;
   /** Append a streamed reasoning delta — same logic for "thinking" parts. */
   appendThinkingDelta: (messageId: string, text: string) => void;
+  /** Append a streamed ``reasoning_content`` delta — DeepSeek/Moonshot/g4f
+   *  style. Same shape as thinking but rendered in a separate "Reasoning"
+   *  block so the user can distinguish OpenAI-native reasoning from the
+   *  non-standard ``reasoning_content`` field. */
+  appendReasoningDelta: (messageId: string, text: string) => void;
   /** Add a tool call as an ordered part (and to the flat ``toolCalls``). */
   addToolCallPart: (messageId: string, toolCall: ToolCall) => void;
   /** Update a tool call inside its part and the flat ``toolCalls``. */
@@ -146,6 +151,23 @@ export const useChatStore = create<ChatState>((set) => ({
           parts.push({ id: newPartId(), type: "thinking" as const, content: text });
         }
         return { ...msg, parts, thinking: (msg.thinking ?? "") + text };
+      });
+      savePersisted(messages);
+      return { messages };
+    }),
+
+  appendReasoningDelta: (messageId, text) =>
+    set((state) => {
+      const messages = state.messages.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        const parts: MessagePart[] = msg.parts ? [...msg.parts] : [];
+        const last = parts[parts.length - 1];
+        if (last && last.type === "reasoning") {
+          parts[parts.length - 1] = { ...last, content: (last.content ?? "") + text };
+        } else {
+          parts.push({ id: newPartId(), type: "reasoning" as const, content: text });
+        }
+        return { ...msg, parts, reasoning: (msg.reasoning ?? "") + text };
       });
       savePersisted(messages);
       return { messages };
