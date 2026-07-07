@@ -14,6 +14,10 @@ from app.api.routes.v1 import files
 from app.api.routes.v1 import me_slash_commands
 from app.api.routes.v1 import ai_providers
 from app.api.routes.v1 import admin_stats
+from app.api.routes.v1 import agent_settings
+from app.api.routes.v1 import mcp_servers
+from app.api.routes.v1 import custom_tools
+from app.api.routes.v1 import skills
 
 v1_router = APIRouter()
 
@@ -43,3 +47,10 @@ v1_router.include_router(
     ai_providers.router, prefix="/ai-providers", tags=["ai-providers"]
 )
 v1_router.include_router(admin_stats.router, prefix="/admin", tags=["admin:stats"])
+
+# New: per-user agent settings (system prompt + sandbox keys), MCP servers,
+# custom tools, and ClawHub skills catalog.
+v1_router.include_router(agent_settings.router, tags=["agent-settings"])
+v1_router.include_router(mcp_servers.router, tags=["mcp-servers"])
+v1_router.include_router(custom_tools.router, tags=["custom-tools"])
+v1_router.include_router(skills.router, tags=["skills"])

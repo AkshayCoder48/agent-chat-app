@@ -11,6 +11,7 @@ const EXACT_CAPTIONS: Record<string, string> = {
   search_web: "Searching the web",
   fetch_url: "Reading a web page",
   get_current_datetime: "Checking the date and time",
+  current_datetime: "Checking the date and time",
   run_python: "Running calculations",
   create_chart_tool: "Creating a chart",
   create_map_tool: "Drawing a map",
@@ -35,6 +36,16 @@ const EXACT_CAPTIONS: Record<string, string> = {
   create_tool: "Creating a custom tool",
   edit_tool: "Editing a custom tool",
   delete_tool: "Deleting a custom tool",
+  // Todo toolset (pydantic_ai_todo) — surfaced in the live plan panel.
+  read_todos: "Reading the plan",
+  write_todos: "Writing the plan",
+  add_todo: "Adding a step to the plan",
+  update_todo_status: "Updating step status",
+  update_todo_statuses: "Updating step statuses",
+  remove_todo: "Removing a step",
+  add_subtask: "Adding a subtask",
+  set_dependency: "Setting a dependency",
+  get_available_tasks: "Finding available tasks",
 };
 
 /** Prefix-based fallbacks for tools like `generate_*`. */

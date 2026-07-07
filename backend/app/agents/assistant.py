@@ -20,18 +20,34 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
 from app.agents.prompts import DEFAULT_SYSTEM_PROMPT
 from app.agents.prompts import get_system_prompt_with_rag
+from app.agents.prompts import build_user_system_prompt
 from pydantic_ai_todo import TodoCapability
 from app.agents.tools.ask_user_tool import MAX_QUESTIONS, QuestionItem, format_answers, parse_questions
 from app.agents.utils import get_current_datetime
 from app.agents.tools.rag_tool import search_knowledge_base
 from app.agents.tools.chart_tool import ChartType, create_chart
 from app.agents.tools.code_execution import run_python as run_python_code
+from app.agents.tools.workspace_tools import (
+    create_file as ws_create_file,
+    create_folder as ws_create_folder,
+    delete_file as ws_delete_file,
+    delete_folder as ws_delete_folder,
+    edit_file as ws_edit_file,
+    list_chats as ws_list_chats,
+    list_files as ws_list_files,
+    read_chat as ws_read_chat,
+    read_file as ws_read_file,
+    run_terminal as ws_run_terminal,
+    send_file as ws_send_file,
+    send_folder as ws_send_folder,
+    write_file as ws_write_file,
+)
 from pathlib import Path
 
 from pydantic_ai_skills import SkillsToolset
@@ -44,19 +60,34 @@ def _build_model(
     model_name: str,
     base_url: str | None = None,
     api_key: str | None = None,
-) -> OpenAIResponsesModel:
+) -> Any:
     """Build an OpenAI-compatible model client.
 
     If ``base_url`` + ``api_key`` are provided, route to the user's custom
-    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, …).
-    Otherwise fall back to the server-configured default (``settings.AI_MODEL``
-    + ``settings.OPENAI_API_KEY``).
+    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, …) via
+    :class:`OpenAIChatModel` — most third-party OpenAI-compatible providers
+    only support ``/v1/chat/completions``, not the newer Responses API.
+
+    For the default (no base_url), use :class:`OpenAIResponsesModel` against
+    the real OpenAI API so we get reasoning summaries, native tools, etc.
     """
     resolved_model = model_name or settings.AI_MODEL
     resolved_key = api_key or settings.OPENAI_API_KEY
-    provider_kwargs: dict[str, Any] = {"api_key": resolved_key}
+
     if base_url:
-        provider_kwargs["base_url"] = base_url
+        # Custom provider — use the chat-completions API. Most third-party
+        # OpenAI-compatible providers (OpenRouter, Groq, Together, Ollama,
+        # vLLM, LM Studio, …) only support /v1/chat/completions, not the
+        # newer Responses API. The OpenAIProvider with a custom base_url
+        # works as the underlying AsyncOpenAI client.
+        provider = OpenAIProvider(
+            api_key=resolved_key or "unset",
+            base_url=base_url,
+        )
+        return OpenAIChatModel(resolved_model, provider=provider)
+
+    # Default OpenAI — use the Responses API.
+    provider_kwargs: dict[str, Any] = {"api_key": resolved_key}
     return OpenAIResponsesModel(
         resolved_model,
         provider=OpenAIProvider(**provider_kwargs),
@@ -86,6 +117,9 @@ class AssistantAgent:
         todo_capability: "TodoCapability | None" = None,
         provider_base_url: str | None = None,
         provider_api_key: str | None = None,
+        user_skills_dir: Path | None = None,
+        custom_tools: list[dict[str, Any]] | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
     ):
         self.todo_capability = todo_capability
         self.model_name = model_name or settings.AI_MODEL
@@ -101,7 +135,13 @@ class AssistantAgent:
             if thinking_effort is not None
             else (settings.AI_THINKING_EFFORT if settings.AI_THINKING_ENABLED else None)
         )
+        # The caller may pass a fully-built prompt (with skill/MCP/tool
+        # sections already appended via build_user_system_prompt); otherwise
+        # we fall back to the static default.
         self.system_prompt = system_prompt or get_system_prompt_with_rag()
+        self.user_skills_dir = user_skills_dir
+        self.custom_tools = custom_tools or []
+        self.mcp_servers = mcp_servers or []
         self._agent: Agent[Deps, str] | None = None
 
     def _create_agent(self) -> Agent[Deps, str]:
@@ -133,9 +173,32 @@ class AssistantAgent:
             model_settings["openai_reasoning_summary"] = "auto"  # type: ignore[typeddict-unknown-key]  # ty: ignore[invalid-key]
         toolsets: list[Any] = []
 
-        skills_dir = Path(__file__).parent.parent.parent / "skills"
-        if skills_dir.exists():
-            toolsets.append(SkillsToolset(directories=[str(skills_dir)]))
+        # Per-user skills directory (uploaded / installed via Settings →
+        # Skills). Falls back to the legacy shared dir when not set.
+        skills_dirs: list[str] = []
+        if self.user_skills_dir is not None and self.user_skills_dir.exists():
+            skills_dirs.append(str(self.user_skills_dir))
+        legacy_skills_dir = Path(__file__).parent.parent.parent / "skills"
+        if legacy_skills_dir.exists():
+            skills_dirs.append(str(legacy_skills_dir))
+        if skills_dirs:
+            try:
+                toolsets.append(SkillsToolset(directories=skills_dirs))
+            except Exception:
+                logger.warning("Failed to load SkillsToolset", exc_info=True)
+
+        # MCP servers — spin up a pydantic-ai toolset per active server.
+        # Failures are logged but don't break the chat (the agent just
+        # doesn't see that server's tools).
+        for srv in self.mcp_servers:
+            try:
+                ts = _build_mcp_toolset(srv)
+                if ts is not None:
+                    toolsets.append(ts)
+            except Exception:
+                logger.warning(
+                    "Failed to wire MCP server %s", srv.get("name"), exc_info=True
+                )
 
         if self.todo_capability is not None:
             capabilities.append(self.todo_capability)
@@ -149,6 +212,7 @@ class AssistantAgent:
         )
 
         self._register_tools(agent)
+        self._register_custom_tools(agent)
 
         return agent
 
@@ -273,6 +337,241 @@ class AssistantAgent:
             """
             return await run_python_code(code)
 
+        # ----------------------------------------------------- workspace tools
+        # Per-user file system + terminal. All paths are relative to the
+        # user's workspace root; the agent never sees absolute paths.
+
+        @agent.tool
+        async def list_files(ctx: RunContext[Deps], path: str = ".") -> str:
+            """List files and folders under ``path`` in the user's workspace.
+
+            Args:
+                path: Relative path (default: workspace root). Use "." for root.
+
+            Returns:
+                A formatted listing: one entry per line with type/size markers.
+            """
+            result = await ws_list_files(ctx.deps.user_id or "", path)
+            if "error" in result:
+                return result["error"]
+            lines = [f"{path}"]
+            for e in result.get("entries", []):
+                kind = "DIR " if e["type"] == "folder" else "FILE"
+                size = f" ({e.get('size')}B)" if e.get("size") is not None else ""
+                lines.append(f"  {kind} {e['name']}{size}")
+            return "\n".join(lines) if len(lines) > 1 else f"{path} is empty"
+
+        @agent.tool
+        async def read_file(ctx: RunContext[Deps], path: str) -> str:
+            """Read the text content of a file in the user's workspace.
+
+            Args:
+                path: Relative path inside the workspace.
+
+            Returns:
+                The file's text content (capped at 256 KB), or an error message.
+            """
+            return await ws_read_file(ctx.deps.user_id or "", path)
+
+        @agent.tool
+        async def create_file(
+            ctx: RunContext[Deps], path: str, content: str, overwrite: bool = False
+        ) -> str:
+            """Create a new file in the user's workspace.
+
+            Args:
+                path: Relative path. Parent folders are created automatically.
+                content: Text content to write (max 5 MB).
+                overwrite: If False (default), refuse to clobber an existing file.
+
+            Returns:
+                A one-line success message.
+            """
+            return await ws_create_file(
+                ctx.deps.user_id or "", path, content, overwrite=overwrite
+            )
+
+        @agent.tool
+        async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
+            """Overwrite a file in the user's workspace (creates if missing).
+
+            Args:
+                path: Relative path inside the workspace.
+                content: New text content.
+            """
+            return await ws_write_file(ctx.deps.user_id or "", path, content)
+
+        @agent.tool
+        async def edit_file(
+            ctx: RunContext[Deps],
+            path: str,
+            find: str,
+            replace: str,
+            replace_all: bool = True,
+        ) -> str:
+            """Find-and-replace literal text inside a file in the workspace.
+
+            Args:
+                path: Relative path inside the workspace.
+                find: Literal substring to find (NOT a regex).
+                replace: Replacement substring.
+                replace_all: If True (default), replace every occurrence; if
+                    False, only the first.
+            """
+            return await ws_edit_file(
+                ctx.deps.user_id or "", path, find, replace, replace_all=replace_all
+            )
+
+        @agent.tool
+        async def delete_file(ctx: RunContext[Deps], path: str) -> str:
+            """Delete a single file from the user's workspace."""
+            return await ws_delete_file(ctx.deps.user_id or "", path)
+
+        @agent.tool
+        async def create_folder(ctx: RunContext[Deps], path: str) -> str:
+            """Create a directory in the user's workspace (mkdir -p semantics)."""
+            return await ws_create_folder(ctx.deps.user_id or "", path)
+
+        @agent.tool
+        async def delete_folder(ctx: RunContext[Deps], path: str) -> str:
+            """Delete a directory tree from the user's workspace (rm -rf)."""
+            return await ws_delete_folder(ctx.deps.user_id or "", path)
+
+        @agent.tool
+        async def send_file(ctx: RunContext[Deps], path: str) -> str:
+            """Return a download descriptor for a file in the workspace.
+
+            Use this when the user asks for a file you've created so they can
+            download it. The frontend renders a download card automatically.
+            """
+            import json as _json
+            result = await ws_send_file(ctx.deps.user_id or "", path)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def send_folder(ctx: RunContext[Deps], path: str) -> str:
+            """Return a download descriptor for a folder (served as a zip)."""
+            import json as _json
+            result = await ws_send_folder(ctx.deps.user_id or "", path)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def run_terminal(
+            ctx: RunContext[Deps], command: str, cwd: str = "."
+        ) -> str:
+            """Run a shell command inside the user's workspace.
+
+            Only a safe allowlist of binaries may be invoked (ls, cat, grep,
+            python3, git, npm, pip, curl, …); shell operators (``|``, ``;``,
+            ``&&``, ``>``, ``<``) are NOT supported. The command runs with
+            the workspace as cwd.
+
+            Args:
+                command: The command line (e.g. ``"ls -la"`` or ``"grep -r foo ."``).
+                cwd: Working directory inside the workspace (default: root).
+
+            Returns:
+                ``stdout`` / ``stderr`` / ``exit_code`` of the process, or an
+                error message.
+            """
+            import json as _json
+            result = await ws_run_terminal(ctx.deps.user_id or "", command, cwd=cwd)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def list_chats(ctx: RunContext[Deps], limit: int = 20) -> str:
+            """List the user's recent chat conversations (titles + IDs).
+
+            Use this when the user asks about a previous chat and you need the ID
+            before calling ``read_chat``.
+
+            Args:
+                limit: Max number of conversations to return (default 20).
+            """
+            import json as _json
+            result = await ws_list_chats(ctx.deps.user_id or "", limit=limit)
+            return _json.dumps(result)
+
+        @agent.tool
+        async def read_chat(ctx: RunContext[Deps], conversation_id: str) -> str:
+            """Read the full message transcript of a previous chat.
+
+            Args:
+                conversation_id: The conversation's UUID (from ``list_chats``).
+            """
+            import json as _json
+            result = await ws_read_chat(ctx.deps.user_id or "", conversation_id)
+            return _json.dumps(result)
+
+    def _register_custom_tools(self, agent: Agent[Deps, str]) -> None:
+        """Register each user-defined custom tool on the agent.
+
+        Two impl flavours:
+          * ``http_webhook`` — POST args to the URL, return the response body.
+          * ``python_snippet`` — exec the snippet in a sandbox with the args
+            as kwargs and return ``str(result)``.
+        """
+        import textwrap
+
+        for ct in self.custom_tools:
+            name = ct.get("name")
+            description = ct.get("description") or "Custom user-defined tool."
+            impl_kind = ct.get("impl_kind", "http_webhook")
+            http_url = ct.get("http_url")
+            http_headers = ct.get("http_headers") or {}
+            python_source = ct.get("python_source") or ""
+
+            if not name:
+                continue
+
+            # Closure-capture per-iteration values.
+            def _make_tool(_name: str, _desc: str, _kind: str, _url: str | None, _headers: dict, _src: str):
+                async def _handler(ctx: RunContext[Deps], **kwargs: Any) -> str:
+                    if _kind == "http_webhook":
+                        import httpx
+                        if not _url:
+                            return "Error: http_webhook tool has no URL configured"
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.post(
+                                    _url,
+                                    json=kwargs,
+                                    headers={k: str(v) for k, v in _headers.items()},
+                                )
+                                text = resp.text
+                                if len(text) > 64_000:
+                                    text = text[:64_000] + "\n… (truncated)"
+                                return text
+                        except Exception as exc:
+                            return f"Error calling {_url}: {exc}"
+                    elif _kind == "python_snippet":
+                        # Run the snippet in the pydantic-monty sandbox so it
+                        # can't break the agent process. The snippet receives
+                        # ``kwargs`` as a dict and may ``return`` a value.
+                        try:
+                            indented_src = textwrap.indent(_src, "    ") if _src else ""
+                            sandbox_src = (
+                                f"_args = {kwargs!r}\n"
+                                f"def _user_fn():\n{indented_src}\n"
+                                f"result = _user_fn()\n"
+                                f"print(repr(result))"
+                            )
+                            result = await run_python_code(sandbox_src)
+                            return result
+                        except Exception as exc:
+                            return f"Error running snippet: {exc}"
+                    return f"Error: unknown impl_kind {_kind!r}"
+
+                _handler.__name__ = _name
+                _handler.__doc__ = _desc
+                return _handler
+
+            try:
+                handler = _make_tool(name, description, impl_kind, http_url, http_headers, python_source)
+                agent.tool(handler)
+            except Exception:
+                logger.warning("Failed to register custom tool %s", name, exc_info=True)
+
     @staticmethod
     def _build_model_history(
         history: list[dict[str, str]] | None,
@@ -343,6 +642,10 @@ def get_agent(
     todo_capability: "TodoCapability | None" = None,
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    system_prompt: str | None = None,
+    user_skills_dir: Path | None = None,
+    custom_tools: list[dict[str, Any]] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
 ) -> AssistantAgent:
     return AssistantAgent(
         model_name=model_name,
@@ -351,7 +654,51 @@ def get_agent(
         todo_capability=todo_capability,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
+        system_prompt=system_prompt,
+        user_skills_dir=user_skills_dir,
+        custom_tools=custom_tools,
+        mcp_servers=mcp_servers,
     )
+
+
+def _build_mcp_toolset(server: dict[str, Any]) -> Any:
+    """Build a pydantic-ai MCP toolset from a stored server config.
+
+    Returns ``None`` when the ``pydantic-ai-mcp`` extra isn't installed or
+    the transport is unknown — the caller logs and moves on.
+    """
+    transport = (server.get("transport") or "").lower()
+    try:
+        # pydantic-ai exposes MCP toolsets via the `pydantic_ai.mcp` module.
+        from pydantic_ai.mcp import MCPServerStdio, MCPServerSSE, MCPServerStreamableHTTP  # type: ignore
+    except ImportError:
+        try:
+            # Older location.
+            from pydantic_ai.toolsets import MCPServerStdio, MCPServerSSE, MCPServerStreamableHTTP  # type: ignore
+        except ImportError:
+            logger.warning(
+                "pydantic-ai MCP extra not installed — MCP server '%s' will be ignored",
+                server.get("name"),
+            )
+            return None
+
+    if transport == "stdio":
+        return MCPServerStdio(
+            command=server.get("command") or "",
+            args=list(server.get("args") or []),
+            env=dict(server.get("env") or {}),
+        )
+    if transport == "sse":
+        return MCPServerSSE(
+            url=server.get("url") or "",
+            headers=dict(server.get("headers") or {}),
+        )
+    if transport == "streamable_http":
+        return MCPServerStreamableHTTP(
+            url=server.get("url") or "",
+            headers=dict(server.get("headers") or {}),
+        )
+    return None
 
 
 async def run_agent(

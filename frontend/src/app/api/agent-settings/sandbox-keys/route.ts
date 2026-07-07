@@ -6,20 +6,10 @@ function authHeaders(req: NextRequest): Record<string, string> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function GET(request: NextRequest) {
   try {
-    const body = await request.text();
-    const data = await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
-      method: "PUT",
-      body,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(request),
-      },
+    const data = await backendFetch(`/api/v1/agent-settings/sandbox-keys`, {
+      headers: { ...authHeaders(request) },
     });
     return NextResponse.json(data);
   } catch (error) {
@@ -30,17 +20,18 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function PUT(request: NextRequest) {
   try {
-    await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
-      method: "DELETE",
-      headers: { ...authHeaders(request) },
+    const body = await request.text();
+    const data = await backendFetch(`/api/v1/agent-settings/sandbox-keys`, {
+      method: "PUT",
+      body,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(request),
+      },
     });
-    return new NextResponse(null, { status: 204 });
+    return NextResponse.json(data);
   } catch (error) {
     if (error instanceof BackendApiError) {
       return NextResponse.json({ detail: error.message }, { status: error.status });

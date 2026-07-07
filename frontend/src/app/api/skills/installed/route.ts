@@ -8,7 +8,7 @@ function authHeaders(req: NextRequest): Record<string, string> {
 
 export async function GET(request: NextRequest) {
   try {
-    const data = await backendFetch(`/api/v1/custom-tools/catalog`, {
+    const data = await backendFetch(`/api/v1/skills/installed`, {
       headers: { ...authHeaders(request) },
     });
     return NextResponse.json(data);

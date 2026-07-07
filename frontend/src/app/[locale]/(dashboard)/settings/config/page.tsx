@@ -274,16 +274,110 @@ export default function ConfigSettingsPage() {
       {/* System prompt override */}
       <SystemPromptSection />
 
+      <OtherApiKeysSection />
+    </div>
+  );
+}
+
+// ---------- Other API Keys Section ----------
+
+function OtherApiKeysSection() {
+  const [tavily, setTavily] = useState("");
+  const [embeddings, setEmbeddings] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/agent-settings/sandbox-keys");
+        if (!res.ok) throw new Error("Failed to load");
+        const d = (await res.json()) as {
+          hopx_api_key_set?: boolean;
+          tavily_api_key_set?: boolean;
+          embeddings_api_key_set?: boolean;
+        };
+        setTavily(d.tavily_api_key_set ? "•••• (set)" : "");
+        setEmbeddings(d.embeddings_api_key_set ? "•••• (set)" : "");
+      } catch {
+        // ignore
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload: Record<string, string | null> = {};
+      // Only send when the user typed something new (don't clear existing keys
+      // when they leave a field blank).
+      if (tavily && !tavily.startsWith("••••")) payload.tavily_api_key = tavily.trim();
+      if (embeddings && !embeddings.startsWith("••••")) payload.embeddings_api_key = embeddings.trim();
+      if (Object.keys(payload).length === 0) {
+        toast.info("No changes to save");
+        return;
+      }
+      const res = await fetch("/api/agent-settings/sandbox-keys", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      toast.success("API keys saved");
+      setTavily("•••• (set)");
+      setEmbeddings("•••• (set)");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
       <SectionCard
         title="Other API keys"
-        description="Web search (Tavily), embeddings, etc. — coming in a follow-up session."
+        description="Keys for web search (Tavily) and embeddings. Stored encrypted on the server."
       >
-        <div className="text-sm text-muted-foreground">
-          Coming soon. For now, set these via the backend environment variables
-          (TAVILY_API_KEY, OPENAI_API_KEY, etc.) on the HF Space.
+        <div className="flex items-center justify-center py-8 text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading…
         </div>
       </SectionCard>
-    </div>
+    );
+  }
+
+  return (
+    <SectionCard
+      title="Other API keys"
+      description="Keys for web search (Tavily) and embeddings. Stored encrypted on the server; leave blank to keep an existing key."
+    >
+      <div className="space-y-4">
+        <FormField label="Tavily API key" htmlFor="tavily-key">
+          <Input
+            id="tavily-key"
+            type="password"
+            value={tavily}
+            onChange={(e) => setTavily(e.target.value)}
+            placeholder="tvly-…"
+          />
+        </FormField>
+        <FormField label="Embeddings API key" htmlFor="embeddings-key">
+          <Input
+            id="embeddings-key"
+            type="password"
+            value={embeddings}
+            onChange={(e) => setEmbeddings(e.target.value)}
+            placeholder="sk-…"
+          />
+        </FormField>
+        <Button onClick={save} disabled={saving} size="sm">
+          {saving && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+          Save keys
+        </Button>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -291,31 +385,47 @@ export default function ConfigSettingsPage() {
 
 function SystemPromptSection() {
   const [prompt, setPrompt] = useState<string>("");
-  const [label, setLabel] = useState<string>("");
+  const [enabled, setEnabled] = useState<boolean>(false);
+  const [defaultPrompt, setDefaultPrompt] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    apiClient
-      .get<{ system_prompt?: string | null; label?: string | null }>("/agent-settings")
-      .then((d) => {
-        setPrompt(d.system_prompt || "");
-        setLabel(d.label || "");
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true));
+    void (async () => {
+      try {
+        const res = await fetch("/api/agent-settings/system-prompt");
+        if (!res.ok) throw new Error("Failed to load");
+        const d = (await res.json()) as {
+          system_prompt?: string | null;
+          system_prompt_enabled?: boolean;
+          default_system_prompt?: string;
+        };
+        setPrompt(d.system_prompt ?? "");
+        setEnabled(d.system_prompt_enabled ?? false);
+        setDefaultPrompt(d.default_system_prompt ?? "");
+      } catch {
+        // ignore — section just stays at defaults
+      } finally {
+        setLoaded(true);
+      }
+    })();
   }, []);
 
   const save = async () => {
     setSaving(true);
     try {
-      await apiClient.patch("/agent-settings", {
-        system_prompt: prompt.trim() || "",
-        label: label.trim() || "",
+      const res = await fetch("/api/agent-settings/system-prompt", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_prompt: prompt.trim() || null,
+          system_prompt_enabled: enabled,
+        }),
       });
+      if (!res.ok) throw new Error("Failed to save");
       toast.success("System prompt saved");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Failed to save");
+      toast.error(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
     }
@@ -324,12 +434,15 @@ function SystemPromptSection() {
   const reset = async () => {
     setSaving(true);
     try {
-      await apiClient.delete("/agent-settings");
+      const res = await fetch("/api/agent-settings/system-prompt", {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to reset");
       setPrompt("");
-      setLabel("");
+      setEnabled(false);
       toast.success("Reset to default prompt");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Failed to reset");
+      toast.error(err instanceof Error ? err.message : "Failed to reset");
     } finally {
       setSaving(false);
     }
@@ -351,24 +464,30 @@ function SystemPromptSection() {
   return (
     <SectionCard
       title="System prompt"
-      description="Override the agent's default system prompt for your chats. Leave empty to use the built-in default."
+      description="Override the agent's default system prompt for your chats. Leave empty to use the built-in default. The agent also automatically learns about your installed skills, MCPs, and custom tools — no need to mention them here."
     >
       <div className="space-y-4">
-        <FormField label="Label (optional)" htmlFor="agent-label">
-          <Input
-            id="agent-label"
-            value={label}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
-            placeholder="e.g. Coding assistant, Research buddy"
-            maxLength={128}
-          />
+        <FormField label="Enable custom prompt" htmlFor="agent-prompt-enabled">
+          <div className="flex items-center gap-2">
+            <input
+              id="agent-prompt-enabled"
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span className="text-sm text-muted-foreground">
+              When checked, your custom prompt replaces the default. When
+              unchecked, the prompt is saved but the default is used.
+            </span>
+          </div>
         </FormField>
         <FormField label="System prompt" htmlFor="agent-system-prompt">
           <textarea
             id="agent-system-prompt"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Leave empty to use the default prompt. Write instructions for how the agent should behave in your chats…"
+            placeholder={`Leave empty to use the default prompt. Write instructions for how the agent should behave in your chats…\n\nDefault prompt:\n${defaultPrompt.slice(0, 500)}…`}
             rows={10}
             maxLength={20000}
             className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
@@ -635,31 +754,67 @@ function ProviderEditor({
   );
 }
 
-// Hopx config section — minimal local-storage-backed input for now.
-// Backend endpoint will be wired in a follow-up session.
+// Hopx config section — persists to backend via /api/agent-settings/sandbox-keys.
+// The key is stored encrypted server-side; the localStorage copy is a
+// fallback for offline / single-instance dev.
 function HopxConfigSection() {
   const [key, setKey] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem("hopx_api_key") : null;
-    if (stored) setKey(stored);
+    void (async () => {
+      // Show a placeholder when the key is already set on the server.
+      try {
+        const res = await fetch("/api/agent-settings/sandbox-keys");
+        if (!res.ok) return;
+        const d = (await res.json()) as { hopx_api_key_set?: boolean };
+        if (d.hopx_api_key_set) setKey("•••• (set)");
+      } catch {
+        // ignore
+      }
+      const stored =
+        typeof window !== "undefined" ? window.localStorage.getItem("hopx_api_key") : null;
+      if (stored && !key) setKey(stored);
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = () => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("hopx_api_key", key.trim());
-      setSaved(true);
-      toast.success("Hopx key saved locally");
-      setTimeout(() => setSaved(false), 2000);
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Only persist when the user typed a new key (not the placeholder).
+      if (key && !key.startsWith("••••")) {
+        const res = await fetch("/api/agent-settings/sandbox-keys", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hopx_api_key: key.trim() }),
+        });
+        if (!res.ok) throw new Error("Failed to save");
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("hopx_api_key", key.trim());
+        }
+        setKey("•••• (set)");
+        setSaved(true);
+        toast.success("Hopx key saved");
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <AlertTriangle className="h-3.5 w-3.5" />
-        <span>Stored in your browser only for now — backend persistence is coming.</span>
+        <span>
+          Optional. When set, the agent routes file/terminal/code-execution
+          ops through the Hopx sandbox instead of the local per-user
+          workspace. Stored encrypted on the server.
+        </span>
       </div>
       <FormField label="Hopx API key" htmlFor="hopx-key">
         <Input
@@ -670,8 +825,16 @@ function HopxConfigSection() {
           onChange={(e) => setKey(e.target.value)}
         />
       </FormField>
-      <Button size="sm" onClick={save}>
-        {saved ? "Saved ✓" : "Save"}
+      <Button size="sm" onClick={save} disabled={saving}>
+        {saving ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> Saving…
+          </>
+        ) : saved ? (
+          "Saved ✓"
+        ) : (
+          "Save"
+        )}
       </Button>
     </div>
   );

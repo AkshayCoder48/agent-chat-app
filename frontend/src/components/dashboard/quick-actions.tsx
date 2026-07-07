@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpen, Database, MessageSquare, Settings } from "lucide-react";
+import { BookOpen, MessageSquare, Settings, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { BACKEND_URL, ROUTES } from "@/lib/constants";
@@ -15,7 +15,7 @@ interface Action {
 
 const ACTIONS: Action[] = [
   { label: "Start a chat", icon: MessageSquare, href: ROUTES.CHAT, featured: true },
-  { label: "Upload to KB", icon: Database, href: ROUTES.RAG },
+  { label: "Skills", icon: Wrench, href: ROUTES.SETTINGS_SKILLS },
   { label: "Settings", icon: Settings, href: ROUTES.SETTINGS },
   { label: "API docs", icon: BookOpen, href: `${BACKEND_URL}/docs`, external: true },
 ];

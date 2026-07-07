@@ -73,6 +73,10 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
   const [currentPath, setCurrentPath] = useState(".");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Bump on every "workspace might have changed" signal so the listing
+  // re-fetches. Driven by both the parent's `onRefreshKey` prop and the
+  // local WS-listener below.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const fetchListing = useCallback(
     async (path: string) => {
@@ -94,9 +98,31 @@ export function FileSidebar({ onRefreshKey }: { onRefreshKey?: string }) {
     []
   );
 
+  // Auto-refresh when the agent completes a workspace-mutating tool call
+  // (create_file / write_file / delete_file / run_terminal / etc.). The
+  // chat-container's WS hook fires a window event for every tool_result;
+  // we filter here to the names that actually change the workspace.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ tool_name: string }>).detail;
+      const name = detail?.tool_name ?? "";
+      if (
+        [
+          "create_file", "write_file", "edit_file", "delete_file",
+          "create_folder", "delete_folder", "run_terminal", "send_file",
+          "send_folder", "upload",
+        ].includes(name)
+      ) {
+        setRefreshTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("tool_result", handler as EventListener);
+    return () => window.removeEventListener("tool_result", handler as EventListener);
+  }, []);
+
   useEffect(() => {
     void fetchListing(currentPath);
-  }, [currentPath, fetchListing, onRefreshKey]);
+  }, [currentPath, fetchListing, onRefreshKey, refreshTick]);
 
   const navigateTo = (path: string) => {
     setCurrentPath(path);

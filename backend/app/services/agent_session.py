@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
 )
 
 from app.agents.assistant import Deps, get_agent
+from app.agents.todo_integration import TodoSessionIntegration
 from app.services.agent import (
     build_message_history,
     persist_assistant_turn,
@@ -63,13 +64,29 @@ class AgentSession:
         self.current_conversation_id: str | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self._ask_user_future: asyncio.Future[list[dict[str, Any]]] | None = None
+        # Per-session todo integration: in-memory TodoStorage + emitter that
+        # forwards every mutation to the client as a `todo_event` WS frame.
+        # The resulting TodoCapability is passed to get_agent() below so the
+        # agent transparently gains read_todos / write_todos / add_todo / …
+        self.todo_integration = TodoSessionIntegration(
+            emit_callback=lambda evt, payload: send_event(self.websocket, evt, payload)
+        )
+        # Per-user prompt + skills + tools + MCP servers. Loaded lazily on
+        # the first turn (so a fresh WS doesn't pay the DB hit if the user
+        # just opens the page and watches).
+        self._user_extras_loaded = False
+        self._user_system_prompt: str | None = None
+        self._user_skills_dir = None
+        self._user_custom_tools: list[dict[str, Any]] = []
+        self._user_mcp_servers: list[dict[str, Any]] = []
 
     async def handle_frame(self, data: dict[str, Any]) -> None:
         """Dispatch one incoming WebSocket frame.
 
         A ``stop`` cancels the running turn; an ``ask_user_response`` unblocks a
-        paused run; any other control frame is ignored; a bare message starts a
-        new turn as a cancellable background task.
+        paused run; a ``todo_action`` controls the todo panel (dismiss / reset);
+        any other control frame is ignored; a bare message starts a new turn as
+        a cancellable background task.
         """
         msg_type = data.get("type")
 
@@ -82,6 +99,38 @@ class AgentSession:
             if fut is not None and not fut.done():
                 answers = data.get("answers")
                 fut.set_result(answers if isinstance(answers, list) else [])
+            return
+
+        if msg_type == "todo_action":
+            action = data.get("action")
+            if action == "dismiss":
+                self.todo_integration.set_dismissed(True)
+            elif action == "reset":
+                self.todo_integration.reset()
+                await send_event(
+                    self.websocket,
+                    "todo_event",
+                    {
+                        "event_type": "reset",
+                        "todo": None,
+                        "previous": None,
+                        "ts": None,
+                        "all_todos": self.todo_integration.snapshot(),
+                    },
+                )
+            elif action == "snapshot":
+                # Client (re)connected mid-session — re-send the current state.
+                await send_event(
+                    self.websocket,
+                    "todo_event",
+                    {
+                        "event_type": "snapshot",
+                        "todo": None,
+                        "previous": None,
+                        "ts": None,
+                        "all_todos": self.todo_integration.snapshot(),
+                    },
+                )
             return
 
         if msg_type is not None:
@@ -130,8 +179,15 @@ class AgentSession:
             await task
 
     async def shutdown(self) -> None:
-        """Cancel any in-flight turn."""
+        """Cancel any in-flight turn and tear down the Hopx sandbox."""
         await self._cancel_turn()
+        # Tear down the user's Hopx sandbox if one was created during the
+        # session. Best-effort — failures don't crash shutdown.
+        try:
+            from app.agents.tools.workspace_tools import destroy_hopx_session
+            await destroy_hopx_session(self.user.id)
+        except Exception:
+            logger.debug("Hopx teardown failed (non-fatal)", exc_info=True)
 
     async def process_message(self, data: dict[str, Any]) -> None:
         """Process one user turn: persist input, run the agent, stream events, persist output."""
@@ -141,6 +197,30 @@ class AgentSession:
         if not user_message and not file_ids:
             await send_event(self.websocket, "error", {"message": "Empty message"})
             return
+
+        # Detect conversation switch and reset the per-session todo list so the
+        # new chat starts with a clean plan panel rather than inheriting the
+        # previous thread's tasks.
+        requested_conv_id = data.get("conversation_id")
+        prior_conv_id = self.current_conversation_id
+        if (
+            requested_conv_id
+            and prior_conv_id
+            and str(requested_conv_id) != str(prior_conv_id)
+        ):
+            self.todo_integration.reset()
+            await send_event(
+                self.websocket,
+                "todo_event",
+                {
+                    "event_type": "reset",
+                    "todo": None,
+                    "previous": None,
+                    "ts": None,
+                    "all_todos": [],
+                },
+            )
+
         self.current_conversation_id, newly_created, organization_id = await persist_user_turn(
             self.user,
             user_message,
@@ -158,6 +238,12 @@ class AgentSession:
         await send_event(self.websocket, "user_prompt", {"content": user_message})
 
         try:
+            # Lazy-load per-user prompt + skills + tools + MCP servers on the
+            # first turn. Cached for the rest of the WS session.
+            if not self._user_extras_loaded:
+                await self._load_user_extras()
+                self._user_extras_loaded = True
+
             # If the client picked a model from one of their custom providers
             # (frame carries provider_id), look up that provider, decrypt the
             # API key, and route the chat request to the provider's base_url.
@@ -188,8 +274,13 @@ class AgentSession:
             assistant = get_agent(
                 model_name=selected_model,
                 thinking_effort=data.get("thinking_effort"),
+                todo_capability=self.todo_integration.capability,
                 provider_base_url=provider_base_url,
                 provider_api_key=provider_api_key,
+                system_prompt=self._user_system_prompt,
+                user_skills_dir=self._user_skills_dir,
+                custom_tools=self._user_custom_tools,
+                mcp_servers=self._user_mcp_servers,
             )
             model_history = build_message_history(self.conversation_history)
             user_input = await self._build_multimodal_input(user_message, file_ids)
@@ -251,6 +342,34 @@ class AgentSession:
             return await fut
         finally:
             self._ask_user_future = None
+
+    async def _load_user_extras(self) -> None:
+        """Load per-user system prompt + skills dir + custom tools + MCP servers.
+
+        Cached in ``self._user_*`` after the first call. Failures are logged
+        and silently degrade — the agent keeps working with the default prompt
+        and no skills/tools/MCPs.
+        """
+        from pathlib import Path
+
+        from app.agents.prompts import build_user_system_prompt, load_user_prompt_extras
+        from app.core.config import settings
+
+        try:
+            extras = await load_user_prompt_extras(self.user.id)
+            self._user_skills_dir = Path(settings.MEDIA_DIR) / "skills" / str(self.user.id)
+            self._user_custom_tools = extras.get("custom_tools") or []
+            self._user_mcp_servers = extras.get("mcp_servers") or []
+            self._user_system_prompt = build_user_system_prompt(
+                user_id=self.user.id,
+                skills=extras.get("skills"),
+                mcp_servers=extras.get("mcp_servers"),
+                custom_tools=extras.get("custom_tools"),
+                user_override=extras.get("user_override"),
+                user_override_enabled=bool(extras.get("user_override_enabled")),
+            )
+        except Exception:
+            logger.warning("Failed to load user prompt extras", exc_info=True)
 
 
     async def _build_multimodal_input(

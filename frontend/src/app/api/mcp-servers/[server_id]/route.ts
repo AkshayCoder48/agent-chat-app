@@ -8,12 +8,12 @@ function authHeaders(req: NextRequest): Record<string, string> {
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
+  { params }: { params: Promise<{ server_id: string }> },
 ) {
-  const { tool_id } = await params;
+  const { server_id } = await params;
   try {
     const body = await request.text();
-    const data = await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
+    const data = await backendFetch(`/api/v1/mcp-servers/${server_id}`, {
       method: "PUT",
       body,
       headers: {
@@ -32,11 +32,11 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
+  { params }: { params: Promise<{ server_id: string }> },
 ) {
-  const { tool_id } = await params;
+  const { server_id } = await params;
   try {
-    await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
+    await backendFetch(`/api/v1/mcp-servers/${server_id}`, {
       method: "DELETE",
       headers: { ...authHeaders(request) },
     });

@@ -64,13 +64,17 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
         : JSON.stringify(toolCall.result, null, 2)
       : "";
 
-  const isDateTime = toolCall.name === "get_current_datetime" && toolCall.status === "completed";
+  const isDateTime =
+    (toolCall.name === "get_current_datetime" || toolCall.name === "current_datetime") &&
+    toolCall.status === "completed";
   const isRAGSearch =
     (toolCall.name === "search_knowledge_base" || toolCall.name === "search_documents") &&
     toolCall.status === "completed" &&
     typeof toolCall.result === "string";
   const webResults =
-    (toolCall.name === "web_search_tool" || toolCall.name === "search_web") &&
+    (toolCall.name === "web_search_tool" ||
+      toolCall.name === "search_web" ||
+      toolCall.name === "web_search") &&
     toolCall.status === "completed" &&
     typeof toolCall.result === "string"
       ? parseWebSearch(toolCall.result)

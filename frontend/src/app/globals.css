@@ -359,6 +359,13 @@
 /* Custom scrollbar — theme-aware, derived from --color-foreground.
    Subtle at rest, more visible while the user is hovering the scroll area. */
 @layer utilities {
+  /* Ensure scroll anchors (scrollIntoView, #fragments) land below the
+     sticky header instead of hidden underneath it. The chat page's outer
+     <main> uses overflow-auto, so this applies to its scroll container. */
+  html {
+    scroll-padding-top: 5rem;
+  }
+
   .scrollbar-thin {
     scrollbar-width: thin;
     /* Firefox: thumb + track. Colors are derived from the foreground so the

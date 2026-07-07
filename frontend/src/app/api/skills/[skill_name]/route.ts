@@ -6,9 +6,14 @@ function authHeaders(req: NextRequest): Record<string, string> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
-export async function GET(request: NextRequest) {
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ skill_name: string }> },
+) {
+  const { skill_name } = await params;
   try {
-    const data = await backendFetch(`/api/v1/custom-tools/catalog`, {
+    const data = await backendFetch(`/api/v1/skills/${encodeURIComponent(skill_name)}`, {
+      method: "DELETE",
       headers: { ...authHeaders(request) },
     });
     return NextResponse.json(data);

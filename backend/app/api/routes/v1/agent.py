@@ -28,11 +28,10 @@ async def list_models(user: CurrentUser, db: AsyncSession = Depends(get_db_sessi
     providers (so the frontend can populate the chat model picker with
     provider-grouped models).
 
-    Note: we intentionally do NOT return the server's built-in
-    ``AI_AVAILABLE_MODELS`` list — the chat picker should show only models
-    the user has explicitly added via Settings → Config. The default model
-    name is still returned so the picker can label the "use server default"
-    option.
+    The "default" model is the first user-added provider's first model — we
+    no longer fall back to the server-configured ``AI_MODEL`` (gpt-5.5) when
+    the user has at least one provider configured. ``default_provider_id`` is
+    returned alongside so the client knows which provider to bind to.
     """
     providers_raw, _ = await ai_provider_repo.list_for_user(
         db, user_id=user.id, active_only=True
@@ -47,8 +46,16 @@ async def list_models(user: CurrentUser, db: AsyncSession = Depends(get_db_sessi
         }
         for p in providers_raw
     ]
+    # Default = first active provider's first model. Falls back to the
+    # server-configured default only when the user has no providers yet.
+    default_model = settings.AI_MODEL
+    default_provider_id: str | None = None
+    if providers and providers[0]["models"]:
+        default_provider_id = providers[0]["id"]
+        default_model = providers[0]["models"][0]
     return {
-        "default": settings.AI_MODEL,
+        "default": default_model,
+        "default_provider_id": default_provider_id,
         "models": [],
         "providers": providers,
     }

@@ -118,21 +118,23 @@ class Settings(BaseSettings):
     S3_BUCKET: str = "agent_chat_app"
     S3_REGION: str = "us-east-1"
     OPENAI_API_KEY: str = ""
-    AI_MODEL: str = "gpt-5.5"
+    # The server-side fallback model — only used when a user has no custom
+    # providers configured. Once they add one, their first model takes over
+    # (see /api/v1/agent/models).
+    AI_MODEL: str = "gpt-4.1-mini"
     AI_TEMPERATURE: float = 0.7
     AI_THINKING_ENABLED: bool = False
     AI_THINKING_EFFORT: str = "medium"  # "low", "medium", "high"
     AI_AVAILABLE_MODELS: list[str] = [
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.4-pro",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
-        "gpt-5-mini",
-        "gpt-5-nano",
-        "gpt-5",
         "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "o1",
+        "o1-mini",
+        "o3",
+        "o3-mini",
     ]
     AI_FRAMEWORK: str = "pydantic_ai"
     LLM_PROVIDER: str = "openai"

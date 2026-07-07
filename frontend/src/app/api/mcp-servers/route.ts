@@ -6,20 +6,13 @@ function authHeaders(req: NextRequest): Record<string, string> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function GET(request: NextRequest) {
+  const url = new URL(request.url);
+  const activeOnly = url.searchParams.get("active_only");
+  const qs = activeOnly ? `?active_only=${encodeURIComponent(activeOnly)}` : "";
   try {
-    const body = await request.text();
-    const data = await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
-      method: "PUT",
-      body,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(request),
-      },
+    const data = await backendFetch(`/api/v1/mcp-servers${qs}`, {
+      headers: { ...authHeaders(request) },
     });
     return NextResponse.json(data);
   } catch (error) {
@@ -30,17 +23,18 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function POST(request: NextRequest) {
   try {
-    await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
-      method: "DELETE",
-      headers: { ...authHeaders(request) },
+    const body = await request.text();
+    const data = await backendFetch(`/api/v1/mcp-servers`, {
+      method: "POST",
+      body,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(request),
+      },
     });
-    return new NextResponse(null, { status: 204 });
+    return NextResponse.json(data, { status: 201 });
   } catch (error) {
     if (error instanceof BackendApiError) {
       return NextResponse.json({ detail: error.message }, { status: error.status });

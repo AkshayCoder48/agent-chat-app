@@ -10,12 +10,12 @@ import { FilePreviewPanel } from "./file-preview-panel";
 import { SourcesPanel } from "./sources-panel";
 import { MessageList } from "./message-list";
 import { PendingMessages } from "./pending-messages";
-// ResearchPanel import removed — deep research is disabled in this build.
-// Re-enable when enable_deep_research is turned on.
+import { ResearchPanel } from "./research-panel";
 import { ToolApprovalDialog } from "./tool-approval-dialog";
 import { QuestionPrompt } from "@/components/ui";
 import type { PendingApproval, AskUserQuestion, AskUserAnswer, Decision } from "@/types";
 import { useConversationStore, useChatStore } from "@/stores";
+import { reconcilePersisted, setPersistedConversationId } from "@/stores/chat-store";
 import { useConversations } from "@/hooks";
 import { useSlashCommands } from "@/hooks";
 
@@ -53,6 +53,7 @@ export function ChatContainer() {
     sendResumeDecisions,
     pendingQuestions,
     sendAskUserResponses,
+    sendTodoAction,
   } = useChat({
     conversationId: currentConversationId,
     onConversationCreated: handleConversationCreated,
@@ -72,6 +73,10 @@ export function ChatContainer() {
     // Skip initial mount
     if (prevId === undefined) {
       prevConversationIdRef.current = currId;
+      // On mount, reconcile persisted messages: keep them only if they
+      // belong to the active conversation. This is what makes a reload
+      // mid-generation restore the in-flight assistant message.
+      reconcilePersisted(currId);
       return;
     }
 
@@ -93,9 +98,11 @@ export function ChatContainer() {
       setModel(null);
       setProviderId(null);
     }
+    // Remember which conversation the persisted messages belong to.
+    setPersistedConversationId(currId);
 
     prevConversationIdRef.current = currId;
-  }, [currentConversationId, clearMessages, clearQueued]);
+  }, [currentConversationId, clearMessages, clearQueued, setModel, setProviderId]);
 
   useEffect(() => {
     if (currentMessages.length > 0) {
@@ -224,6 +231,7 @@ export function ChatContainer() {
       onResumeDecisions={sendResumeDecisions}
       pendingQuestions={pendingQuestions}
       onAnswerQuestions={sendAskUserResponses}
+      onTodoAction={sendTodoAction}
       onStop={stopGeneration}
       conversationId={currentConversationId}
     />
@@ -258,6 +266,7 @@ interface ChatUIProps {
   onResumeDecisions?: (decisions: Decision[]) => void;
   pendingQuestions?: AskUserQuestion[] | null;
   onAnswerQuestions?: (answers: AskUserAnswer[]) => void;
+  onTodoAction?: (action: "dismiss" | "reset" | "snapshot") => void;
   onStop?: () => void;
 }
 
@@ -283,6 +292,7 @@ function ChatUI({
   onResumeDecisions,
   pendingQuestions,
   onAnswerQuestions,
+  onTodoAction,
   onStop,
 }: ChatUIProps) {
   const tc = useTranslations("common");
@@ -321,6 +331,14 @@ function ChatUI({
               disabled={!isConnected}
               onComplete={onAnswerQuestions}
             />
+          </div>
+        )}
+        {/* Todo tool: live plan panel — same slot as QuestionPrompt. The agent
+         * emits `todo_event` WS frames for every plan mutation; this panel
+         * renders the live checklist with a progress bar and a "Cut" button. */}
+        {onTodoAction && (
+          <div className="px-2 pb-2 sm:px-4 sm:pb-2">
+            <ResearchPanel onDismiss={() => onTodoAction("dismiss")} />
           </div>
         )}
         <div className="px-2 pb-2 sm:px-4 sm:pb-4">

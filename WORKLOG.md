@@ -405,3 +405,117 @@ if isinstance(data.get("questions"), str):
 - `Dockerfile` — self-contained backend build
 - `entrypoint.sh` — Postgres + Alembic + FastAPI startup
 - `README.md` — HF Space YAML front-matter + docs
+
+---
+
+## Session 2 — 2026-07-07 — Todo Tool + Full Backlog Completion
+
+### Todo Tool (priority ask)
+- **Backend** `app/agents/todo_integration.py`: `TodoSessionIntegration` wraps `pydantic_ai_todo.TodoCapability` with a per-WS-session `TodoStorage` + `TodoEventEmitter`. Every mutation emits a `todo_event` WS frame to the client (with the full `all_todos` snapshot so the frontend doesn't need to merge events).
+- **Backend** `agent_session.py`: instantiates one `TodoSessionIntegration` per session, passes the resulting `TodoCapability` to `get_agent()`, handles `todo_action` frames (`dismiss` / `reset` / `snapshot`), and resets todos on conversation switch.
+- **Frontend** `stores/research-store.ts`: real implementation of `applyTodoEvent` / `dismiss` / `reset` (was a no-op stub). Keyed by `currentTurnId` (= conversation id) so multiple chats don't collide.
+- **Frontend** `hooks/use-chat.ts`: forwards the new `all_todos` field to the store, requests a `snapshot` on (re)connect so a page reload mid-generation restores the live plan, exposes `sendTodoAction` to the chat UI.
+- **Frontend** `components/chat/research-panel.tsx`: rewrote with a "Cut" (Scissors) button — the exact UI the user asked for. Auto-hides when dismissed or when no todos exist.
+- **Frontend** `components/chat/chat-container.tsx`: re-enabled `ResearchPanel`, rendered in the SAME slot as `QuestionPrompt` (right above the chat input). Todo tool calls are filtered out of the message transcript so they only show in the panel.
+- **Frontend** `lib/agent-step-captions.ts`: added captions for all 9 todo tools so they narrate correctly while running.
+
+### New backend tools (the "missing tools" backlog)
+- `app/agents/tools/workspace_tools.py`: `list_files`, `read_file`, `create_file`, `write_file`, `edit_file`, `delete_file`, `create_folder`, `delete_folder`, `send_file`, `send_folder`, `run_terminal`, `list_chats`, `read_chat`. All per-user-scoped under `MEDIA_DIR/workspaces/<user_id>/` with path-escape protection. `run_terminal` uses an allowlist (ls, cat, grep, python3, git, npm, curl, …). All registered in `assistant.py:_register_tools` with the correct `(ctx, ...)` signatures (fixes the "takes 1 positional argument but 2 were given" bug).
+
+### New backend routes
+- `agent_settings.py`: `/agent-settings/system-prompt` (GET/PUT/DELETE) + `/agent-settings/sandbox-keys` (GET/PUT). Stores per-user system prompt + encrypted Hopx/Tavily/embeddings keys.
+- `mcp_servers.py`: `/mcp-servers` CRUD (GET/POST/PUT/DELETE).
+- `custom_tools.py`: `/custom-tools` CRUD + `/custom-tools/catalog` (built-in starter tools).
+- `skills.py`: `/skills/installed`, `/skills/catalog` (ClawHub proxy with fallback), `/skills/install/{name}`, `/skills/upload` (.zip + SKILL.md), `/skills/{name}/SKILL.md`.
+- `files.py` extended: `/files/workspace/{user_id}/download`, `/download-folder` (zips on the fly), `/list`.
+- New migration `0026_user_settings_mcp_tools.py` adds `user_settings`, `mcp_servers`, `custom_tools` tables.
+
+### Agent / parser fixes
+- Switched custom providers from `OpenAIResponsesModel` → `OpenAIChatModel` (most third-party OpenAI-compatible providers only support `/v1/chat/completions`, not the Responses API). Fixes the "AI provider 404 errors on chat completions" bug.
+- `FunctionToolResultEvent.result` → already using `.part` (was previously fixed).
+- `reasoning_content` from DeepSeek/Moonshot is picked up natively by pydantic-ai's OpenAI parser.
+- Agent now uses the user's saved system prompt (when enabled) and dynamically injects available skills + MCP servers + custom tools into the prompt.
+
+### MCP wiring at chat time
+- `assistant.py:_build_mcp_toolset` builds a pydantic-ai toolset (stdio / SSE / streamable-http) per active MCP server config; `_create_agent` adds each to the agent's toolsets list. Failures are logged but don't break the chat.
+
+### Skills wiring
+- Per-user skills directory `MEDIA_DIR/skills/<user_id>/` is loaded by `SkillsToolset` at chat time. The `skills/upload` endpoint extracts `.zip` / saves `SKILL.md` into the user's dir. ClawHub catalog is fetched with a fallback built-in catalog when the API is unreachable.
+
+### Custom tools wiring
+- `_register_custom_tools` in `AssistantAgent` registers each active custom tool as an `@agent.tool`. Two impl kinds: `http_webhook` (POST args to URL) and `python_snippet` (sandboxed via `pydantic-monty`).
+
+### Hopx sandbox integration
+- `app/agents/tools/hopx_client.py`: REST client for the Hopx API (`/v1/sandboxes`, `/v1/sandboxes/{id}/files`, `/v1/sandboxes/{id}/exec`).
+- `workspace_tools.py:_get_hopx_session` lazy-creates a per-user Hopx sandbox on first tool call, caches it for the session. `read_file`, `create_file`, `run_terminal` route through Hopx when the user has set a `HOPX_API_KEY`; otherwise fall back to the local per-user workspace. `destroy_hopx_session` is called on WS shutdown.
+- `agent_settings.py` persists the Hopx key encrypted via Fernet (uses `SECRET_KEY`); the frontend Config page saves it server-side.
+
+### UI / animations / chat bugs
+- `chat-store.ts`: persists messages to `sessionStorage` keyed by conversation id, so a reload mid-generation restores the in-flight assistant message. `reconcilePersisted` drops stale state on conversation switch.
+- `chat-container.tsx`: reconciles persisted state on mount; `setPersistedConversationId` tracks the active conversation.
+- `use-chat.ts`: fires a `tool_result` window event with the tool name on every tool completion; `FileSidebar` listens and auto-refreshes when a workspace-mutating tool finishes (create_file, write_file, delete_file, run_terminal, …).
+- `globals.css`: added `scroll-padding-top: 5rem` so scroll anchors don't hide under the sticky header.
+- `tool-call-card.tsx`: also recognizes `current_datetime` and `web_search` (in addition to the old `get_current_datetime` / `web_search_tool` names).
+- `agent-step-captions.ts`: added captions for all new tools (list_files, read_file, create_file, write_file, edit_file, delete_file, create_folder, delete_folder, send_file, send_folder, run_terminal, list_chats, read_chat) and the 9 todo tools.
+
+### Settings pages
+- `settings/skills/page.tsx`: full ClawHub catalog grid with install/uninstall, upload .zip / SKILL.md, installed-skills list.
+- `settings/mcps/page.tsx`: full CRUD with stdio / SSE / streamable-http transport picker.
+- `settings/tools/page.tsx`: full custom-tool editor (HTTP webhook + Python snippet), starter catalog install, parameters JSON schema editor.
+- `settings/config/page.tsx`: System Prompt section now persists via `/api/agent-settings/system-prompt`. New `OtherApiKeysSection` for Tavily + embeddings keys. `HopxConfigSection` persists via `/api/agent-settings/sandbox-keys`.
+- `settings/plugins/page.tsx`: deprecated, redirects users to Skills + MCPs.
+- `settings-nav.tsx` + `settings/layout.tsx`: both now show all 9 tabs (Profile, Account, Config, Slash commands, Skills, MCPs, Tools, Plugins, Appearance) consistently.
+- All new frontend proxy routes under `/api/agent-settings/`, `/api/mcp-servers/`, `/api/custom-tools/`, `/api/skills/`.
+
+### Cleanup
+- Removed "Upload to KB" button from `quick-actions.tsx` (replaced with Skills link).
+- `gpt-5.5` default model → `gpt-4.1-mini` in `config.py`. `/agent/models` now returns `default_provider_id` so the frontend's model picker auto-selects the first user-added provider's first model.
+
+### Known limitations / follow-ups
+- Tool streaming: tool *calls* and *results* stream as separate events, but the intermediate output of long-running tools (e.g. `run_terminal` stdout) is not streamed — it appears all at once when the tool returns. True streaming would require each tool to emit progress events via a callback.
+- "Registration failed" in production: the route works locally; needs HF Space logs to diagnose. Likely a CORS / env var issue, not a code issue.
+- MCP servers: the `pydantic-ai-mcp` extra needs to be installed on the HF Space for the MCP toolsets to actually spin up; without it, `_build_mcp_toolset` logs a warning and the agent just doesn't see those tools.
+- Hopx REST endpoints are best-effort guesses (the public Hopx API may differ); the integration is structured so swapping the URL constants in `hopx_client.py` is the only change needed.
+
+### Files created (16)
+- `backend/app/agents/todo_integration.py`
+- `backend/app/agents/tools/workspace_tools.py`
+- `backend/app/agents/tools/hopx_client.py`
+- `backend/app/api/routes/v1/agent_settings.py`
+- `backend/app/api/routes/v1/mcp_servers.py`
+- `backend/app/api/routes/v1/custom_tools.py`
+- `backend/app/api/routes/v1/skills.py`
+- `backend/app/db/models/user_settings.py`
+- `backend/alembic/versions/0026_user_settings_mcp_tools.py`
+- `frontend/src/app/api/agent-settings/system-prompt/route.ts`
+- `frontend/src/app/api/agent-settings/sandbox-keys/route.ts`
+- `frontend/src/app/api/mcp-servers/route.ts`
+- `frontend/src/app/api/mcp-servers/[server_id]/route.ts`
+- `frontend/src/app/api/custom-tools/{route,[tool_id]/route,catalog/route}.ts`
+- `frontend/src/app/api/skills/{installed,catalog,upload}/route.ts`
+- `frontend/src/app/api/skills/install/[skill_name]/route.ts`
+- `frontend/src/app/api/skills/[skill_name]/route.ts`
+
+### Files modified (12)
+- `backend/app/agents/assistant.py` (custom tools, MCP, per-user skills, chat completions API for custom providers)
+- `backend/app/agents/prompts.py` (dynamic system prompt builder)
+- `backend/app/api/routes/v1/__init__.py` (wire new routers)
+- `backend/app/api/routes/v1/agent.py` (default_provider_id, first-user-provider-wins)
+- `backend/app/api/routes/v1/files.py` (workspace download endpoints)
+- `backend/app/core/config.py` (gpt-4.1-mini default, model list cleanup)
+- `backend/app/db/models/__init__.py` (register new models)
+- `backend/app/schemas/base.py` (default_provider_id on AgentModelsResponse)
+- `backend/app/services/agent_session.py` (todo integration, Hopx teardown, lazy user-extras loading, conversation-switch reset)
+- `frontend/src/components/chat/chat-container.tsx` (re-enable ResearchPanel, persisted-state reconcile, todo action wiring)
+- `frontend/src/components/chat/file-sidebar.tsx` (auto-refresh on tool_result events)
+- `frontend/src/components/chat/message-item.tsx` (filter out todo tool calls)
+- `frontend/src/components/chat/research-panel.tsx` (Cut button, real store, dismiss state)
+- `frontend/src/components/chat/tool-call-card.tsx` (recognize new tool names)
+- `frontend/src/components/dashboard/quick-actions.tsx` (drop Upload to KB)
+- `frontend/src/components/settings/settings-nav.tsx` (add Plugins, consistency)
+- `frontend/src/hooks/use-chat.ts` (todo action, tool_result window event, snapshot on reconnect)
+- `frontend/src/lib/agent-step-captions.ts` (new tool captions)
+- `frontend/src/stores/chat-store.ts` (sessionStorage persistence)
+- `frontend/src/stores/research-store.ts` (real implementation)
+- `frontend/src/app/[locale]/(dashboard)/settings/{config,skills,mcps,tools,plugins,layout}/page.tsx` (full rewrites)
+- `frontend/src/app/globals.css` (scroll-padding-top)

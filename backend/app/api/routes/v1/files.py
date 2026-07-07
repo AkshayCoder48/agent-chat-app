@@ -1,16 +1,23 @@
 
 """File upload and download endpoints for chat attachments."""
 
+import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 
+from app.agents.tools.workspace_tools import (
+    _resolve_safe,
+    _workspace_root,
+    zip_folder,
+)
 from app.api.deps import CurrentUser, FileUploadSvc
 from app.core.exceptions import NotFoundError
 from app.schemas.file import FileInfo, FileUploadResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/files", tags=["files"])
 
 
@@ -98,3 +105,115 @@ async def get_file_info(
         created_at=chat_file.created_at,
         user_id=chat_file.user_id,
     )
+
+
+# --------------------------------------------------------------- workspace DL
+# Endpoints the agent's ``send_file`` / ``send_folder`` tools build URLs for.
+# Per-user workspace lives under ``MEDIA_DIR/workspaces/<user_id>/`` — see
+# ``app.agents.tools.workspace_tools``. Only the owner may fetch from their
+# workspace; paths are resolved and verified to stay inside the root.
+
+
+@router.get("/workspace/{user_id}/download")
+async def download_workspace_file(
+    user_id: UUID,
+    current_user: CurrentUser,
+    path: str = Query(..., description="Relative path inside the user's workspace"),
+) -> Any:
+    """Serve a single file from the user's workspace."""
+    # Only the owner may read their workspace.
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your workspace")
+
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists() or target.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    safe_name = target.name.replace('"', "")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_name}"',
+        "X-Frame-Options": "SAMEORIGIN",
+    }
+    return FileResponse(path=str(target), headers=headers)
+
+
+@router.get("/workspace/{user_id}/download-folder")
+async def download_workspace_folder(
+    user_id: UUID,
+    current_user: CurrentUser,
+    path: str = Query(..., description="Relative folder path inside the user's workspace"),
+) -> Any:
+    """Zip a folder on the fly and serve it as a download."""
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your workspace")
+
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists() or target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+
+    zip_path = await _safe_zip(root, target)
+    safe_name = f"{target.name}.zip".replace('"', "")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_name}"',
+        "X-Frame-Options": "SAMEORIGIN",
+    }
+    return FileResponse(path=str(zip_path), media_type="application/zip", headers=headers)
+
+
+async def _safe_zip(root, folder):
+    """Run the blocking zip in a thread so the event loop isn't held."""
+    import asyncio
+
+    return await asyncio.to_thread(zip_folder, root, folder)
+
+
+@router.get("/workspace/{user_id}/list", response_model=None)
+async def list_workspace(
+    user_id: UUID,
+    current_user: CurrentUser,
+    path: str = Query(".", description="Relative path inside the user's workspace"),
+) -> Any:
+    """List the contents of a workspace directory (used by the file sidebar)."""
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your workspace")
+
+    root = _workspace_root(str(current_user.id))
+    try:
+        target = _resolve_safe(root, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+    if target.is_file():
+        return {
+            "path": path,
+            "entries": [
+                {"name": target.name, "type": "file", "size": target.stat().st_size}
+            ],
+        }
+
+    entries: list[dict[str, Any]] = []
+    for child in sorted(target.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
+        try:
+            st = child.stat()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": child.name,
+                "type": "folder" if child.is_dir() else "file",
+                "size": st.st_size if child.is_file() else None,
+            }
+        )
+    return {"path": path, "entries": entries}

@@ -3,6 +3,7 @@
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ChatMessageFile } from "@/types";
 import { ToolCallCard } from "./tool-call-card";
+import { RESEARCH_TOOL_NAMES } from "./research-panel";
 import { MarkdownContent } from "./markdown-content";
 import { CopyButton } from "./copy-button";
 import { RatingButtons } from "./rating-buttons";
@@ -215,7 +216,12 @@ export function MessageItem({ message, groupPosition, onRegenerate }: MessageIte
 
         {(() => {
           const rawParts = message.parts ?? [];
-          const parts = rawParts;
+          // Filter out todo-tool calls — they're aggregated in the live
+          // ResearchPanel above the chat input instead of cluttering the
+          // transcript with one card per `read_todos` / `add_todo` / etc.
+          const parts = rawParts.filter(
+            (p) => !(p.type === "tool" && p.toolCall && RESEARCH_TOOL_NAMES.has(p.toolCall.name)),
+          );
           const useParts = !isUser && parts.length > 0;
 
           // "Thinking…" placeholder — shown until anything streams in.

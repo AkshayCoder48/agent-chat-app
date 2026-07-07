@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Blocks, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
+import { Blocks, Boxes, Palette, Settings, Shield, Slash, UserCircle, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -13,6 +13,8 @@ interface NavItem {
   href: string;
   icon: LucideIcon;
   description: string;
+  /** When true, dim the entry (used for the deprecated Plugins page). */
+  muted?: boolean;
 }
 
 const ITEMS: NavItem[] = [
@@ -44,7 +46,7 @@ const ITEMS: NavItem[] = [
     label: "Skills",
     href: ROUTES.SETTINGS_SKILLS,
     icon: Wrench,
-    description: "Built-in and uploaded AI skills",
+    description: "ClawHub catalog + uploaded skills",
   },
   {
     label: "MCPs",
@@ -56,7 +58,14 @@ const ITEMS: NavItem[] = [
     label: "Tools",
     href: ROUTES.SETTINGS_TOOLS,
     icon: Wrench,
-    description: "Built-in + custom AI tools",
+    description: "Custom HTTP / Python tools",
+  },
+  {
+    label: "Plugins",
+    href: ROUTES.SETTINGS_PLUGINS,
+    icon: Boxes,
+    description: "Deprecated — see Skills + MCPs",
+    muted: true,
   },
   {
     label: "Appearance",

@@ -6,14 +6,24 @@ function authHeaders(req: NextRequest): Record<string, string> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function GET(request: NextRequest) {
+  try {
+    const data = await backendFetch(`/api/v1/agent-settings/system-prompt`, {
+      headers: { ...authHeaders(request) },
+    });
+    return NextResponse.json(data);
+  } catch (error) {
+    if (error instanceof BackendApiError) {
+      return NextResponse.json({ detail: error.message }, { status: error.status });
+    }
+    return NextResponse.json({ detail: "Internal server error" }, { status: 500 });
+  }
+}
+
+export async function PUT(request: NextRequest) {
   try {
     const body = await request.text();
-    const data = await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
+    const data = await backendFetch(`/api/v1/agent-settings/system-prompt`, {
       method: "PUT",
       body,
       headers: {
@@ -30,17 +40,13 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ tool_id: string }> },
-) {
-  const { tool_id } = await params;
+export async function DELETE(request: NextRequest) {
   try {
-    await backendFetch(`/api/v1/custom-tools/${tool_id}`, {
+    const data = await backendFetch(`/api/v1/agent-settings/system-prompt`, {
       method: "DELETE",
       headers: { ...authHeaders(request) },
     });
-    return new NextResponse(null, { status: 204 });
+    return NextResponse.json(data);
   } catch (error) {
     if (error instanceof BackendApiError) {
       return NextResponse.json({ detail: error.message }, { status: error.status });

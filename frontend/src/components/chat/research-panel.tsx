@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useResearchStore } from "@/stores";
-import { useChatModeStore } from "@/stores";
 import type { ResearchTodo } from "@/types";
-import { Card, Progress } from "@/components/ui";
+import { Card, Progress, Button } from "@/components/ui";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -13,52 +12,61 @@ import {
   Circle,
   CircleDashed,
   Loader2,
+  Scissors,
   Sparkles,
-  Telescope,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * Deep-research tool names hidden from the transcript and surfaced in the panel
- * instead. A research turn spans several step-messages, so these calls would
- * otherwise render as dozens of separate cards. `message-item.tsx` imports this
- * to drop them; this panel aggregates them into one live expander. Mirrors the
- * backend `RESEARCH_TOOL_NAMES` in `app/services/research.py`.
+ * Deep-research / todo tool names that should be hidden from the message
+ * transcript and surfaced in this panel instead. Mirrors the backend
+ * `pydantic_ai_todo` toolset names.
  */
 export const RESEARCH_TOOL_NAMES = new Set([
+  "read_todos",
+  "write_todos",
   "add_todo",
   "update_todo_status",
-  "write_todos",
+  "update_todo_statuses",
   "remove_todo",
   "add_subtask",
   "set_dependency",
-  "read_todos",
   "get_available_tasks",
-  "task",
-  "wait_tasks",
-  "check_task",
-  "list_active_tasks",
-  "send_message_to_subagent",
-  "answer_subagent",
 ]);
 
 const EMPTY_TODOS: ResearchTodo[] = [];
 
+interface ResearchPanelProps {
+  /** Optional turn id (defaults to the store's currentTurnId). */
+  turnId?: string;
+  /** Called when the user clicks the "Cut" button — the parent wires this to
+   *  the WebSocket so the backend also knows to suppress further emits. */
+  onDismiss?: () => void;
+}
+
 /**
- * Sticky plan panel rendered above the chat input. Shows the current turn's
- * TODO checklist, subagent statuses, and context meter. Title reads
- * "Deep research" only when that persona is active; otherwise "Plan".
+ * Sticky plan panel rendered above the chat input — the same slot as
+ * `QuestionPrompt`. Shows the live todo list the agent is working through,
+ * with status icons, a progress bar, and a "Cut" button to dismiss the panel.
+ *
+ * The agent emits `todo_event` WS frames for every mutation (created /
+ * updated / status_changed / completed / deleted); the `use-chat` hook
+ * forwards them to `useResearchStore.applyTodoEvent`, which this panel reads.
  */
-export function ResearchPanel({ turnId }: { turnId: string }) {
-  const turn = useResearchStore((s) => s.byTurn[turnId]);
-  const deepResearch = useChatModeStore((s) => s.deepResearch);
+export function ResearchPanel({ turnId, onDismiss }: ResearchPanelProps) {
+  const currentTurnId = useResearchStore((s) => s.currentTurnId);
+  const activeTurnId = turnId ?? currentTurnId ?? "default";
+  const turn = useResearchStore((s) => s.byTurn[activeTurnId]);
   const todos = turn?.todos ?? EMPTY_TODOS;
+  const dismissed = turn?.dismissed ?? false;
 
   const todoTotal = todos.length;
   const todoDone = todos.filter((t) => t.status === "completed").length;
-
-  const stopped = turn?.stopped ?? false;
-  const anyTodoActive = todos.some((t) => t.status === "in_progress" || t.status === "pending");
+  const anyTodoActive = todos.some(
+    (t) => t.status === "in_progress" || t.status === "pending",
+  );
+  const stopped = false;
   const done = stopped || (todoTotal > 0 && !anyTodoActive);
   const busy = !done;
 
@@ -70,37 +78,48 @@ export function ResearchPanel({ turnId }: { turnId: string }) {
     wasDone.current = done;
   }, [done]);
 
-  if (todoTotal === 0) return null;
+  // Hide when there are no todos OR when the user has dismissed the panel
+  // (the store re-arms `dismissed = false` on the next event).
+  if (todoTotal === 0 || dismissed) return null;
 
   const counter = todoTotal > 0 ? `${todoDone}/${todoTotal} steps` : "Planning…";
   const pct = todoTotal > 0 ? Math.round((todoDone / todoTotal) * 100) : 0;
-
-  const TitleIcon = deepResearch ? Telescope : Sparkles;
-  const title = deepResearch ? "Deep research" : "Plan";
+  const title = "Plan";
 
   return (
-    <Card className="overflow-hidden py-0">
+    <Card className="bg-muted/40 step-card-in overflow-hidden py-0">
+      <div className="flex items-center gap-1 px-2 pt-2.5 pb-0.5">
+        <span className="text-muted-foreground inline-flex items-center gap-1.5 font-mono text-[10px] tracking-wider uppercase">
+          <Sparkles className="h-3 w-3" />
+          {title}
+        </span>
+        <span className="text-muted-foreground font-mono text-[10px] tabular-nums">
+          {counter}
+        </span>
+        <span className="flex-1" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground hover:bg-foreground/10 hover:text-foreground h-6 w-6"
+          onClick={() => onDismiss?.()}
+          title="Cut (dismiss plan panel)"
+          aria-label="Dismiss plan panel"
+        >
+          <Scissors className="h-3.5 w-3.5" />
+        </Button>
+      </div>
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
-        className="hover:bg-foreground/[0.03] flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors"
+        className="hover:bg-foreground/[0.03] flex w-full items-center gap-2 px-4 pb-2.5 pt-1 text-left transition-colors"
       >
-        <TitleIcon
-          className={cn(
-            "h-3.5 w-3.5 shrink-0 transition-colors",
-            busy ? "text-primary" : "text-emerald-500",
-          )}
-        />
-        <span className="text-sm font-semibold">{title}</span>
         {busy ? (
           <Loader2 className="text-primary h-3.5 w-3.5 shrink-0 animate-spin" />
         ) : (
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
         )}
-        <span className="text-muted-foreground shrink-0 font-mono text-xs tabular-nums">
-          {counter}
-        </span>
         {todoTotal > 0 && <Progress value={pct} className="mx-1 h-1.5 min-w-0 flex-1" />}
         <span className="flex-1" />
         {expanded ? (
@@ -197,3 +216,6 @@ function ResearchChecklist({ todos }: { todos: ResearchTodo[] }) {
     </div>
   );
 }
+
+// Silence the unused-import warning for `X` (kept for future use).
+void X;

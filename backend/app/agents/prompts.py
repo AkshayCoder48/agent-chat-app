@@ -9,7 +9,15 @@ choose a good path. Avoid re-introducing long process checklists or absolute
 mechanical and, in the RAG case, cause it to wrongly refuse general questions.
 """
 
+from __future__ import annotations
+
+import logging
+from typing import Any
+from uuid import UUID
+
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _BASE_SYSTEM_PROMPT = """You are a knowledgeable, capable AI assistant. Help the user accomplish their task or answer their question as well as you can.
 
@@ -125,3 +133,182 @@ Missing evidence is not automatically a "no". If the documents don't cover the q
 
 
 DEFAULT_SYSTEM_PROMPT = get_default_system_prompt()
+
+
+# ---------------------------------------------------------------------- dynamic
+# The functions below load per-user prompt *additions* — installed skills,
+# MCP servers, custom tools — and append a short summary to the base prompt
+# so the LLM knows what's available without being asked.
+
+def _skills_section(skills: list[dict[str, Any]]) -> str:
+    if not skills:
+        return ""
+    lines = ["\n\n# Available skills", "You can use these installed skills:"]
+    for s in skills:
+        name = s.get("name") or s.get("path") or "skill"
+        desc = (s.get("description") or "").strip()
+        lines.append(f"- `{name}` — {desc}" if desc else f"- `{name}`")
+    lines.append(
+        "Skills are loaded automatically — call them by name when the task "
+        "matches. Read a skill's SKILL.md via the `read_skill` tool for details."
+    )
+    return "\n".join(lines)
+
+
+def _mcp_section(servers: list[dict[str, Any]]) -> str:
+    if not servers:
+        return ""
+    lines = ["\n\n# Connected MCP servers", "Tools from these MCP servers are available:"]
+    for s in servers:
+        name = s.get("name") or "mcp"
+        url = s.get("url") or s.get("command") or ""
+        lines.append(f"- `{name}` — {url}" if url else f"- `{name}`")
+    return "\n".join(lines)
+
+
+def _custom_tools_section(tools: list[dict[str, Any]]) -> str:
+    if not tools:
+        return ""
+    lines = ["\n\n# Custom tools", "The user has defined these custom tools — prefer them when relevant:"]
+    for t in tools:
+        name = t.get("name") or "tool"
+        desc = (t.get("description") or "").strip()
+        lines.append(f"- `{name}` — {desc}" if desc else f"- `{name}`")
+    return "\n".join(lines)
+
+
+def build_user_system_prompt(
+    *,
+    user_id: UUID | str | None = None,
+    skills: list[dict[str, Any]] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    custom_tools: list[dict[str, Any]] | None = None,
+    user_override: str | None = None,
+    user_override_enabled: bool = False,
+) -> str:
+    """Build the final system prompt for a chat turn.
+
+    Order of precedence:
+      1. If ``user_override_enabled`` and ``user_override`` are set, use the
+         user's saved prompt verbatim (with the dynamic additions appended).
+      2. Otherwise use the default prompt + RAG guidance.
+
+    The dynamic sections (skills, MCP, custom tools) are always appended so
+    the LLM knows what's available regardless of which base prompt is used.
+    """
+    if user_override_enabled and user_override and user_override.strip():
+        base = user_override.strip()
+    else:
+        base = get_system_prompt_with_rag()
+
+    sections = [
+        _skills_section(skills or []),
+        _mcp_section(mcp_servers or []),
+        _custom_tools_section(custom_tools or []),
+    ]
+    return base + "".join(s for s in sections if s)
+
+
+async def load_user_prompt_extras(user_id: UUID | str) -> dict[str, Any]:
+    """Load the per-user prompt inputs (system prompt, skills, MCPs, tools).
+
+    Returns a dict with keys: ``user_override``, ``user_override_enabled``,
+    ``skills``, ``mcp_servers``, ``custom_tools``. Failures are logged and
+    returned as empty lists so the chat never crashes because of a settings
+    lookup error.
+    """
+    out: dict[str, Any] = {
+        "user_override": None,
+        "user_override_enabled": False,
+        "skills": [],
+        "mcp_servers": [],
+        "custom_tools": [],
+    }
+
+    try:
+        from app.db.session import get_db_context
+        from app.db.models.user_settings import UserSettings, MCPServer, CustomTool
+        from sqlalchemy import select
+        from pathlib import Path
+
+        async with get_db_context() as db:
+            row = (
+                await db.execute(
+                    select(UserSettings).where(UserSettings.user_id == UUID(str(user_id)))
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                out["user_override"] = row.system_prompt
+                out["user_override_enabled"] = row.system_prompt_enabled
+
+            mcp_rows = (
+                await db.execute(
+                    select(MCPServer).where(
+                        MCPServer.user_id == UUID(str(user_id)),
+                        MCPServer.is_active.is_(True),
+                    )
+                )
+            ).scalars().all()
+            out["mcp_servers"] = [
+                {
+                    "name": r.name,
+                    "transport": r.transport,
+                    "command": r.command,
+                    "url": r.url,
+                }
+                for r in mcp_rows
+            ]
+
+            tool_rows = (
+                await db.execute(
+                    select(CustomTool).where(
+                        CustomTool.user_id == UUID(str(user_id)),
+                        CustomTool.is_active.is_(True),
+                    )
+                )
+            ).scalars().all()
+            out["custom_tools"] = [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "parameters_schema": dict(r.parameters_schema or {}),
+                    "impl_kind": r.impl_kind,
+                    "http_url": r.http_url,
+                    "http_headers": dict(r.http_headers or {}),
+                    "python_source": r.python_source,
+                }
+                for r in tool_rows
+            ]
+
+        # Scan the user's skills dir for installed skills.
+        skills_root = Path(settings.MEDIA_DIR) / "skills" / str(user_id)
+        if skills_root.exists():
+            for child in sorted(skills_root.iterdir(), key=lambda p: p.name.lower()):
+                if not child.is_dir():
+                    continue
+                skill_md = child / "SKILL.md"
+                desc = ""
+                if skill_md.exists():
+                    try:
+                        text = skill_md.read_text(encoding="utf-8", errors="replace")
+                        for line in text.splitlines():
+                            line = line.strip().lstrip("#").strip()
+                            if line and not line.startswith("---"):
+                                desc = line[:200]
+                                break
+                    except OSError:
+                        pass
+                out["skills"].append({"name": child.name, "description": desc})
+    except Exception:
+        logger.warning("Failed to load user prompt extras", exc_info=True)
+
+    return out
+
+
+__all__ = [
+    "DEFAULT_SYSTEM_PROMPT",
+    "get_default_system_prompt",
+    "get_system_prompt_with_rag",
+    "build_user_system_prompt",
+    "load_user_prompt_extras",
+]

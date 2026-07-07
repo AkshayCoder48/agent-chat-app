@@ -10,5 +10,6 @@ from app.db.models.sync_source import SyncSource
 from app.db.models.conversation_share import ConversationShare
 from app.db.models.user_slash_command import UserSlashCommand
 from app.db.models.ai_provider import AIProvider
+from app.db.models.user_settings import UserSettings, MCPServer, CustomTool
 
-__all__ = ['User', 'Conversation', 'Message', 'ToolCall', 'ChatFile', 'MessageRating', 'RAGDocument', 'SyncLog', 'SyncSource', 'ConversationShare', 'UserSlashCommand', 'AIProvider']
+__all__ = ['User', 'Conversation', 'Message', 'ToolCall', 'ChatFile', 'MessageRating', 'RAGDocument', 'SyncLog', 'SyncSource', 'ConversationShare', 'UserSlashCommand', 'AIProvider', 'UserSettings', 'MCPServer', 'CustomTool']

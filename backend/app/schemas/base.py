@@ -59,6 +59,9 @@ class ErrorResponse(BaseModel):
 
 class AgentModelsResponse(BaseModel):
     default: str
+    # ID of the provider the default model belongs to (null when falling back
+    # to the server-configured AI_MODEL because the user has no providers).
+    default_provider_id: str | None = None
     models: list[str]
     # User-configured custom providers and their model IDs, grouped per provider.
     # Each entry: { "id": "<uuid>", "name": "OpenAI", "base_url": "https://…", "models": ["gpt-4o", …] }

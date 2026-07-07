@@ -45,6 +45,7 @@ export function useChat(options: UseChatOptions = {}) {
     updateToolCallPart,
     clearMessages,
   } = useChatStore();
+  const { setCurrentTurnId: setCurrentTodoTurnId, reset: resetTodoTurn } = useResearchStore();
 
   const [isProcessing, setIsProcessing] = useState(false);
   // Held in a ref instead of state because the WS handler reads it
@@ -69,6 +70,14 @@ export function useChat(options: UseChatOptions = {}) {
   const thinkingEffortRef = useRef<"low" | "medium" | "high" | null>(null);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<AskUserQuestion[] | null>(null);
+
+  // Track the active conversation id in the research store so todo events
+  // route to the right turn bucket. Reset the bucket when going to a new chat.
+  useEffect(() => {
+    const turnId = currentConversationIdFromStore ?? conversationId ?? null;
+    setCurrentTodoTurnId(turnId);
+    if (turnId === null) resetTodoTurn();
+  }, [currentConversationIdFromStore, conversationId, setCurrentTodoTurnId, resetTodoTurn]);
 
   const handleWebSocketMessage = useCallback(
     (event: MessageEvent) => {
@@ -213,6 +222,29 @@ export function useChat(options: UseChatOptions = {}) {
               status: "completed",
             });
           }
+          // Broadcast a window event so other components (e.g. FileSidebar)
+          // can auto-refresh when the agent mutates the workspace.
+          try {
+            const data = wsEvent.data as { tool_call_id?: string };
+            // Look up the tool name from the chat store.
+            const msgs = useChatStore.getState().messages;
+            outer: for (let i = msgs.length - 1; i >= 0; i--) {
+              const msg = msgs[i];
+              if (!msg?.parts) continue;
+              for (const p of msg.parts) {
+                if (p.type === "tool" && p.toolCall?.id === data.tool_call_id) {
+                  window.dispatchEvent(
+                    new CustomEvent("tool_result", {
+                      detail: { tool_name: p.toolCall.name },
+                    }),
+                  );
+                  break outer;
+                }
+              }
+            }
+          } catch {
+            // ignore — best-effort event
+          }
           break;
         }
 
@@ -304,11 +336,12 @@ export function useChat(options: UseChatOptions = {}) {
           break;
         }
         case "todo_event": {
-          const { event_type, todo } = wsEvent.data as {
+          const { event_type, todo, all_todos } = wsEvent.data as {
             event_type: string;
-            todo: ResearchTodo;
+            todo: ResearchTodo | null;
+            all_todos?: ResearchTodo[] | null;
           };
-          useResearchStore.getState().applyTodoEvent(event_type, todo);
+          useResearchStore.getState().applyTodoEvent(event_type, todo, all_todos);
           break;
         }
 
@@ -394,6 +427,28 @@ export function useChat(options: UseChatOptions = {}) {
     connect();
     return () => disconnect();
   }, [accessToken, connect, disconnect]);
+
+  // On (re)connect, ask the backend for the current todo snapshot so the
+  // live plan panel re-renders after a WS drop or page reload.
+  useEffect(() => {
+    if (isConnected) {
+      sendMessage({ type: "todo_action", action: "snapshot" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected]);
+
+  const sendTodoAction = useCallback(
+    (action: "dismiss" | "reset" | "snapshot") => {
+      if (!isConnected) return;
+      sendMessage({ type: "todo_action", action });
+      if (action === "dismiss") useResearchStore.getState().dismiss();
+      if (action === "reset") {
+        const turnId = useResearchStore.getState().currentTurnId ?? "default";
+        useResearchStore.getState().reset(turnId);
+      }
+    },
+    [isConnected, sendMessage],
+  );
 
   const doSend = useCallback(
     (content: string, fileIds?: string[], files?: ChatMessageFile[]) => {
@@ -554,5 +609,7 @@ export function useChat(options: UseChatOptions = {}) {
     sendResumeDecisions,
     pendingQuestions,
     sendAskUserResponses,
+    // Todo tool: live plan panel control
+    sendTodoAction,
   };
 }
