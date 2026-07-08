@@ -90,3 +90,123 @@ async def agent_websocket(
     finally:
         await session.shutdown()
         manager.disconnect(websocket)
+
+
+@router.get("/agent/diagnose")
+async def diagnose_provider(
+    user: CurrentUser,
+    provider_id: str,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Test connectivity from the BACKEND HOST to a user-configured provider.
+
+    This endpoint exists specifically to diagnose "Connection error." reports
+    that surface in the chat UI. The chat itself runs over a WebSocket and
+    the openai SDK collapses every network-level failure (DNS, TLS, connect
+    timeout, IP block, RemoteProtocolError, …) into the bare string
+    ``"Connection error."`` with no diagnostic detail.
+
+    This endpoint does the same provider call the chat would do, but via a
+    plain HTTP request whose response can carry the full exception type +
+    cause chain + traceback excerpt. So when a user reports "Connection
+    error." in the chat UI, hit this endpoint from the SAME host the
+    backend runs on (e.g. ``curl https://api.example.com/api/v1/agent/diagnose?provider_id=...``)
+    and you'll see exactly what the backend sees when it tries to reach
+    the provider.
+
+    Returns:
+        ok: True if the provider responded with a non-error completion.
+        provider_base_url, model, http_status: the request shape.
+        error_type, error_message, cause_chain: populated when ok=False.
+        completion: the model's reply (truncated) when ok=True.
+    """
+    import json as _json
+    import traceback as _tb
+
+    from app.agents.reasoning_transport import build_reasoning_aware_client
+
+    db_session: AsyncSession | None = None
+    try:
+        async with get_db_session() as db:  # type: ignore[arg-type]
+            prov = await ai_provider_repo.get_by_id(db, provider_id)
+            if prov is None or prov.user_id != user.id:
+                return {"ok": False, "error": "provider not found for current user"}
+            base_url = prov.base_url
+            api_key = (
+                ai_provider_repo.get_decrypted_api_key(prov)
+                if prov.api_key_encrypted
+                else None
+            )
+            selected_model = model or (prov.models[0] if prov.models else "")
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"failed to load provider: {type(e).__name__}: {e}",
+        }
+
+    if not selected_model:
+        return {"ok": False, "error": "no model specified (provider has no models and ?model= not provided)"}
+
+    # Build the EXACT same client the chat uses (ReasoningAwareTransport
+    # + hardened httpx config). This way we're testing the real path.
+    http_client = build_reasoning_aware_client(
+        base_url=base_url,
+        api_key=api_key or "unset",
+    )
+
+    # Send a one-token streaming chat-completion request. Streaming is
+    # important — most of the "Connection error." failures happen DURING
+    # the SSE stream (mid-chunk network drop, malformed chunk, etc.), not
+    # during the initial HTTP handshake.
+    try:
+        async with http_client.stream(
+            "POST",
+            "/chat/completions",
+            json={
+                "model": selected_model,
+                "messages": [{"role": "user", "content": "Say pong and nothing else."}],
+                "stream": True,
+                "max_tokens": 16,
+            },
+            timeout=30.0,
+        ) as resp:
+            status = resp.status_code
+            ct = resp.headers.get("content-type", "")
+            chunks: list[str] = []
+            total_bytes = 0
+            async for raw in resp.aiter_bytes():
+                total_bytes += len(raw)
+                # Capture first 5 SSE events for the response payload
+                if len(chunks) < 5:
+                    try:
+                        text = raw.decode("utf-8", errors="replace")
+                        chunks.append(text[:400])
+                    except Exception:
+                        chunks.append(f"<{len(raw)} bytes>")
+                if total_bytes > 8192:
+                    break
+            return {
+                "ok": 200 <= status < 300,
+                "provider_base_url": base_url,
+                "model": selected_model,
+                "http_status": status,
+                "content_type": ct,
+                "bytes_received": total_bytes,
+                "first_chunks": chunks,
+            }
+    except Exception as e:
+        # Walk the cause chain — same logic as _format_agent_error
+        chain: list[str] = []
+        cur: BaseException | None = e
+        while cur is not None and len(chain) < 8:
+            chain.append(f"{type(cur).__name__}: {str(cur)[:200] or '(no message)'}")
+            cur = cur.__cause__ or cur.__context__
+        return {
+            "ok": False,
+            "provider_base_url": base_url,
+            "model": selected_model,
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "cause_chain": chain,
+            "traceback_excerpt": _tb.format_exc()[-2000:],
+        }

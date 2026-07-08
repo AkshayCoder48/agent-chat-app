@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import traceback
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -63,12 +64,19 @@ def _format_agent_error(exc: BaseException) -> str:
     diagnostic info. Seeing "APIConnectionError: Connection error." at
     least tells them it's a network-level failure vs. an auth failure
     vs. a parser failure.
+
+    If the chain is shallow / uninformative (e.g., just a bare
+    ``APIConnectionError("Connection error.")`` with no cause), we append
+    a diagnostic hint pointing at the server logs and the most likely
+    causes (deployment network egress, provider downtime, IP block).
     """
     parts: list[str] = []
+    chain_types: list[str] = []
     cur: BaseException | None = exc
     depth = 0
-    while cur is not None and depth < 6:
+    while cur is not None and depth < 8:
         type_name = type(cur).__name__
+        chain_types.append(type_name)
         msg = str(cur) or "(no message)"
         frame = f"{type_name}: {msg}"
         if not parts or parts[-1] != frame:
@@ -77,7 +85,37 @@ def _format_agent_error(exc: BaseException) -> str:
         # __context__ (implicit chaining during exception handling).
         cur = cur.__cause__ or cur.__context__
         depth += 1
-    return " → ".join(parts) if parts else f"{type(exc).__name__}: {exc}"
+    if not parts:
+        parts.append(f"{type(exc).__name__}: {exc}")
+        chain_types.append(type(exc).__name__)
+
+    # When the chain is suspiciously shallow AND contains a known generic
+    # "Connection error." frame, the user is almost certainly looking at a
+    # network-level failure (DNS / TLS / connect-refused / IP block /
+    # provider downtime) but the underlying httpx cause was lost somewhere
+    # in the pydantic-ai / openai SDK re-wrapping. Append a hint pointing
+    # them at the server logs (which carry the FULL traceback) and listing
+    # the most likely root causes so they know what to check next.
+    chain_str = " → ".join(parts)
+    looks_like_bare_conn_error = (
+        len(parts) <= 2
+        and any("Connection error" in p for p in parts)
+        and not any(t in {"ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
+                          "ConnectError", "ReadError", "ProxyError",
+                          "httpx.ConnectTimeout", "httpx.ConnectError"}
+                    for t in chain_types)
+    )
+    if looks_like_bare_conn_error:
+        chain_str += (
+            "\n\nUnderlying network error was swallowed by the openai SDK. "
+            "Check the backend server logs for the full httpx traceback. "
+            "Most common causes: (1) the deployment host cannot reach the "
+            "provider's URL (DNS / firewall / IP block), (2) the provider "
+            "is rate-limiting or geo-blocking the deployment's IP range, "
+            "(3) the provider is temporarily down. Try the /api/v1/agent/diagnose "
+            "endpoint from the backend host to test connectivity directly."
+        )
+    return chain_str
 
 
 class AgentSession:
@@ -403,12 +441,33 @@ class AgentSession:
         except WebSocketDisconnect:
             raise
         except Exception as e:
-            logger.exception("Error processing agent request")
-            # Walk the __cause__ / __context__ chain so the user sees the
-            # real underlying error instead of the openai SDK's generic
-            # "Connection error." string. A 10s ConnectTimeout surfaces as
-            # "APIConnectionError: Connection error. → ConnectTimeout: timed out"
-            # which actually tells you what's wrong.
+            # Capture the FULL diagnostic picture before formatting the
+            # user-facing message. The user-facing message is intentionally
+            # short (one cause chain line); the server log gets the full
+            # traceback so the operator can diagnose network / TLS / SSE
+            # issues that the openai SDK collapses into "Connection error.".
+            #
+            # We log:
+            #   - exception type + str (one-liner)
+            #   - full cause-chain types (so we can see if httpx errors
+            #     are being lost in the pydantic-ai wrapping)
+            #   - the full Python traceback (via logger.exception)
+            #   - the provider URL + model name (so we can spot e.g.
+            #     g4f.space being down vs OpenAI being down)
+            #
+            # All of this is server-side only; the WS event stays short.
+            chain_types: list[str] = []
+            cur: BaseException | None = e
+            while cur is not None and len(chain_types) < 8:
+                chain_types.append(f"{type(cur).__name__}({str(cur)[:120]!r})")
+                cur = cur.__cause__ or cur.__context__
+            logger.error(
+                "Agent turn failed — provider=%s model=%s chain=%s",
+                provider_base_url,
+                selected_model,
+                " -> ".join(chain_types),
+                exc_info=True,
+            )
             msg = _format_agent_error(e)
             await send_event(self.websocket, "error", {"message": msg})
 

@@ -110,20 +110,35 @@ class ReasoningAwareTransport(httpx.AsyncBaseTransport):
         path = request.url.path
         if not (path.endswith("/chat/completions") or path.endswith("/chat/completions/")):
             return response
+        # CRITICAL: never intercept HTTP error responses (4xx / 5xx). The
+        # openai SDK has its own error-response handling (raises
+        # ``APIStatusError`` subclasses like ``BadRequestError``,
+        # ``AuthenticationError``, ``RateLimitError``) and needs to see the
+        # raw response body to construct a useful error message. If we wrap
+        # the response, the SDK's error parser sees mangled bytes and falls
+        # back to the generic ``APIConnectionError("Connection error.")`` —
+        # exactly the bug we keep seeing in production.
+        #
+        # This was a subtle bug: when g4f.space (or its Cloudflare front)
+        # returned a 4xx/5xx with content-type ``text/html`` (a block page)
+        # or ``application/json`` (a structured error), our transport was
+        # STILL wrapping the body as if it were an SSE stream. The
+        # ``_FilteredStream`` then tried to parse HTML/JSON as SSE events,
+        # silently produced garbage, and the SDK raised
+        # ``APIConnectionError("Connection error.")`` because it couldn't
+        # make sense of the response.
+        if response.status_code >= 400:
+            return response
         ctype = response.headers.get("content-type", "")
-        # We intercept when the response advertises SSE. We also intercept
-        # when the content-type is missing/unknown because some providers
-        # (and some HTTP proxies) strip the content-type. We do NOT
-        # intercept when the response is explicitly application/json — that
-        # means a single (non-streamed) completion, and the OpenAI SDK
-        # parses it fine without us.
-        if ctype and "text/event-stream" not in ctype and "application/json" not in ctype:
-            # Unknown content-type — intercept defensively (we'll just pass
-            # bytes through if it doesn't look like SSE).
-            return self._wrap_stream_response(response)
-        if "text/event-stream" in ctype:
-            return self._wrap_stream_response(response)
-        return response
+        # Only intercept when the response advertises SSE. We no longer
+        # intercept on unknown / missing content-types — too many providers
+        # return HTML/JSON error bodies with weird content-types, and
+        # intercepting them causes the SDK to misparse the error. If the
+        # response is genuinely an SSE stream, the content-type WILL be
+        # ``text/event-stream`` (or contain it).
+        if "text/event-stream" not in ctype:
+            return response
+        return self._wrap_stream_response(response)
 
     def _wrap_stream_response(self, response: httpx.Response) -> httpx.Response:
         # Capture the original byte iterator. We must call aiter_bytes() ONCE
