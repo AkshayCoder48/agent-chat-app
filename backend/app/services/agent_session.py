@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import traceback
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -27,7 +26,6 @@ from pydantic_ai.messages import (
 )
 
 from app.agents.assistant import Deps, get_agent
-from app.agents.reasoning_transport import reset_reasoning_callback, set_reasoning_callback
 from app.agents.todo_integration import TodoSessionIntegration
 from app.services.agent import (
     build_message_history,
@@ -35,6 +33,46 @@ from app.services.agent import (
     persist_user_turn,
     send_event,
 )
+
+
+def _format_agent_error(exc: BaseException) -> str:
+    """Walk an exception's ``__cause__`` / ``__context__`` chain to surface
+    the *real* underlying error.
+
+    The OpenAI SDK wraps every httpx ``RequestError`` as
+    ``APIConnectionError`` with the generic message ``"Connection error."`` —
+    useless for debugging. The actual cause (DNS failure, TLS handshake,
+    ``RemoteProtocolError``, ``ReadTimeout``, g4f 502, …) is on
+    ``__cause__``. pydantic-ai adds another layer of wrapping on top.
+
+    This helper drills down through every layer and returns a single-line
+    string that names both the outermost error type (so the user knows what
+    *kind* of failure it was) and the innermost cause (so they can fix it).
+    """
+    outer = f"{type(exc).__name__}: {exc!s}".strip()
+    cursor: BaseException | None = exc
+    innermost: BaseException = exc
+    seen: set[int] = set()
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        innermost = cursor
+        nxt = cursor.__cause__ or cursor.__context__
+        if nxt is cursor:
+            break
+        cursor = nxt
+    if innermost is exc:
+        return outer
+    inner = f"{type(innermost).__name__}: {innermost!s}".strip()
+    if inner == outer:
+        return outer
+    # Prefer the innermost cause when it has more detail than the outer
+    # wrapper. ``APIConnectionError: Connection error, `` (empty trailing
+    # cause) is the canonical case where we want to surface the inner one.
+    if len(inner) > len(outer) or outer.endswith("Connection error,") or outer == "Connection error.":
+        return f"{outer} → {inner}"
+    return f"{outer} → {inner}"
+
+
 from app.db.models.user import User
 from app.api.deps import get_conversation_service
 from app.db.session import get_db_context
@@ -42,80 +80,6 @@ from app.services.file_storage import get_file_storage
 from app.repositories import ai_provider_repo
 
 logger = logging.getLogger(__name__)
-
-
-def _format_agent_error(exc: BaseException) -> str:
-    """Format an agent exception with type + cause chain for the WS error event.
-
-    The openai SDK's ``APIConnectionError`` defaults to the generic
-    ``"Connection error."`` message that gives the user no clue what
-    actually went wrong (DNS? TLS? UA-block? malformed SSE? HTTP 403?
-    ConnectTimeout? ReadTimeout? RemoteProtocolError?).
-
-    This helper walks the ``__cause__`` / ``__context__`` chain and emits
-    ``"TypeA: msgA → TypeB: msgB"`` so the user sees the real
-    underlying cause.
-
-    Consecutive frames with identical messages are collapsed (the openai
-    SDK often re-wraps the httpx error with the same string).
-
-    We ALWAYS include the exception type — even for single-frame errors —
-    because the bare message "Connection error." gives the user zero
-    diagnostic info. Seeing "APIConnectionError: Connection error." at
-    least tells them it's a network-level failure vs. an auth failure
-    vs. a parser failure.
-
-    If the chain is shallow / uninformative (e.g., just a bare
-    ``APIConnectionError("Connection error.")`` with no cause), we append
-    a diagnostic hint pointing at the server logs and the most likely
-    causes (deployment network egress, provider downtime, IP block).
-    """
-    parts: list[str] = []
-    chain_types: list[str] = []
-    cur: BaseException | None = exc
-    depth = 0
-    while cur is not None and depth < 8:
-        type_name = type(cur).__name__
-        chain_types.append(type_name)
-        msg = str(cur) or "(no message)"
-        frame = f"{type_name}: {msg}"
-        if not parts or parts[-1] != frame:
-            parts.append(frame)
-        # Prefer __cause__ (explicit ``raise X from Y``); fall back to
-        # __context__ (implicit chaining during exception handling).
-        cur = cur.__cause__ or cur.__context__
-        depth += 1
-    if not parts:
-        parts.append(f"{type(exc).__name__}: {exc}")
-        chain_types.append(type(exc).__name__)
-
-    # When the chain is suspiciously shallow AND contains a known generic
-    # "Connection error." frame, the user is almost certainly looking at a
-    # network-level failure (DNS / TLS / connect-refused / IP block /
-    # provider downtime) but the underlying httpx cause was lost somewhere
-    # in the pydantic-ai / openai SDK re-wrapping. Append a hint pointing
-    # them at the server logs (which carry the FULL traceback) and listing
-    # the most likely root causes so they know what to check next.
-    chain_str = " → ".join(parts)
-    looks_like_bare_conn_error = (
-        len(parts) <= 2
-        and any("Connection error" in p for p in parts)
-        and not any(t in {"ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
-                          "ConnectError", "ReadError", "ProxyError",
-                          "httpx.ConnectTimeout", "httpx.ConnectError"}
-                    for t in chain_types)
-    )
-    if looks_like_bare_conn_error:
-        chain_str += (
-            "\n\nUnderlying network error was swallowed by the openai SDK. "
-            "Check the backend server logs for the full httpx traceback. "
-            "Most common causes: (1) the deployment host cannot reach the "
-            "provider's URL (DNS / firewall / IP block), (2) the provider "
-            "is rate-limiting or geo-blocking the deployment's IP range, "
-            "(3) the provider is temporarily down. Try the /api/v1/agent/diagnose "
-            "endpoint from the backend host to test connectivity directly."
-        )
-    return chain_str
 
 
 class AgentSession:
@@ -325,8 +289,6 @@ class AgentSession:
             # API key, and route the chat request to the provider's base_url.
             provider_base_url: str | None = None
             provider_api_key: str | None = None
-            provider_model_type: str = "chat"
-            provider_tools_enabled: bool = True
             provider_id = data.get("provider_id")
             selected_model = data.get("model")
             if provider_id:
@@ -339,27 +301,6 @@ class AgentSession:
                                 ai_provider_repo.get_decrypted_api_key(prov)
                                 if prov.api_key_encrypted
                                 else None
-                            )
-                            # Per-provider knobs that control how the agent
-                            # talks to the provider:
-                            #   - model_type: "chat" (POST /v1/chat/completions,
-                            #     universal) vs "responses" (POST /v1/responses,
-                            #     OpenAI-direct only). Defaults to "chat" so
-                            #     third-party providers like g4f.space work
-                            #     out of the box — using OpenAIResponsesModel
-                            #     against them is the root cause of stuck-at-
-                            #     thinking because the SSE stream never starts.
-                            #   - tools_enabled: when False, the agent registers
-                            #     NO tools so the request body has no ``tools``
-                            #     array. Works around 403s from g4f / free
-                            #     models that reject any tool payload.
-                            provider_model_type = (
-                                getattr(prov, "model_type", None) or "chat"
-                            )
-                            if provider_model_type not in ("chat", "responses"):
-                                provider_model_type = "chat"
-                            provider_tools_enabled = bool(
-                                getattr(prov, "tools_enabled", True)
                             )
                             if not selected_model and prov.models:
                                 selected_model = prov.models[0]
@@ -376,8 +317,6 @@ class AgentSession:
                 todo_capability=self.todo_integration.capability,
                 provider_base_url=provider_base_url,
                 provider_api_key=provider_api_key,
-                provider_model_type=provider_model_type,  # type: ignore[arg-type]
-                provider_tools_enabled=provider_tools_enabled,
                 system_prompt=self._user_system_prompt,
                 user_skills_dir=self._user_skills_dir,
                 custom_tools=self._user_custom_tools,
@@ -386,27 +325,11 @@ class AgentSession:
             model_history = build_message_history(self.conversation_history)
             user_input = await self._build_multimodal_input(user_message, file_ids)
 
-            # Bind a per-turn reasoning callback so ReasoningAwareTransport
-            # (only active for custom-provider turns) can stream
-            # ``reasoning_content`` deltas straight to the client as
-            # ``reasoning_delta`` WS events. The previous thinking/text
-            # parsers are untouched — both run side-by-side.
-            async def _emit_reasoning_delta(content: str) -> None:
-                await send_event(
-                    self.websocket,
-                    "reasoning_delta",
-                    {"index": 0, "content": content},
-                )
-
-            reasoning_token = set_reasoning_callback(_emit_reasoning_delta)
-            try:
-                collected_tool_calls: list[dict[str, Any]] = []
-                async with assistant.agent.iter(
-                    user_input, deps=self.deps, message_history=model_history
-                ) as agent_run:
-                    await self._stream_agent_run(agent_run, user_message, collected_tool_calls)
-            finally:
-                reset_reasoning_callback(reasoning_token)
+            collected_tool_calls: list[dict[str, Any]] = []
+            async with assistant.agent.iter(
+                user_input, deps=self.deps, message_history=model_history
+            ) as agent_run:
+                await self._stream_agent_run(agent_run, user_message, collected_tool_calls)
 
             # Update in-memory history only after a complete agent run
             if agent_run.result is not None:
@@ -441,35 +364,15 @@ class AgentSession:
         except WebSocketDisconnect:
             raise
         except Exception as e:
-            # Capture the FULL diagnostic picture before formatting the
-            # user-facing message. The user-facing message is intentionally
-            # short (one cause chain line); the server log gets the full
-            # traceback so the operator can diagnose network / TLS / SSE
-            # issues that the openai SDK collapses into "Connection error.".
-            #
-            # We log:
-            #   - exception type + str (one-liner)
-            #   - full cause-chain types (so we can see if httpx errors
-            #     are being lost in the pydantic-ai wrapping)
-            #   - the full Python traceback (via logger.exception)
-            #   - the provider URL + model name (so we can spot e.g.
-            #     g4f.space being down vs OpenAI being down)
-            #
-            # All of this is server-side only; the WS event stays short.
-            chain_types: list[str] = []
-            cur: BaseException | None = e
-            while cur is not None and len(chain_types) < 8:
-                chain_types.append(f"{type(cur).__name__}({str(cur)[:120]!r})")
-                cur = cur.__cause__ or cur.__context__
-            logger.error(
-                "Agent turn failed — provider=%s model=%s chain=%s",
-                provider_base_url,
-                selected_model,
-                " -> ".join(chain_types),
-                exc_info=True,
+            logger.exception("Error processing agent request")
+            # ``str(e)`` collapses to "Connection error." for openai's
+            # APIConnectionError, hiding the real cause (DNS failure,
+            # RemoteProtocolError, g4f 502, …). ``_format_agent_error`` walks
+            # the __cause__ / __context__ chain to surface what actually went
+            # wrong.
+            await send_event(
+                self.websocket, "error", {"message": _format_agent_error(e)}
             )
-            msg = _format_agent_error(e)
-            await send_event(self.websocket, "error", {"message": msg})
 
     async def _ask_user(self, questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Pause the run: ask the client questions and block until they answer.
@@ -509,7 +412,6 @@ class AgentSession:
                 skills=extras.get("skills"),
                 mcp_servers=extras.get("mcp_servers"),
                 custom_tools=extras.get("custom_tools"),
-                env_vars=extras.get("env_vars"),
                 user_override=extras.get("user_override"),
                 user_override_enabled=bool(extras.get("user_override_enabled")),
             )

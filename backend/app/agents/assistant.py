@@ -2,7 +2,7 @@
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.capabilities import (
@@ -27,7 +27,6 @@ from pydantic_ai.settings import ModelSettings
 from app.agents.prompts import DEFAULT_SYSTEM_PROMPT
 from app.agents.prompts import get_system_prompt_with_rag
 from app.agents.prompts import build_user_system_prompt
-from app.agents.reasoning_transport import build_reasoning_aware_client
 from pydantic_ai_todo import TodoCapability
 from app.agents.tools.ask_user_tool import MAX_QUESTIONS, QuestionItem, format_answers, parse_questions
 from app.agents.utils import get_current_datetime
@@ -49,22 +48,6 @@ from app.agents.tools.workspace_tools import (
     send_folder as ws_send_folder,
     write_file as ws_write_file,
 )
-from app.agents.tools.sc_tools import (
-    CreateSCArgs as SCCreateArgs,
-    DeleteSCArgs as SCDeleteArgs,
-    EditSCArgs as SCEditArgs,
-    create_sc as sc_create,
-    delete_sc as sc_delete,
-    edit_sc as sc_edit,
-    list_sc as sc_list,
-)
-from app.agents.tools.env_tools import (
-    DeleteEnvArgs,
-    SetEnvArgs,
-    delete_env as env_delete,
-    list_env as env_list,
-    set_env as env_set,
-)
 from pathlib import Path
 
 from pydantic_ai_skills import SkillsToolset
@@ -73,83 +56,26 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ProviderConfig:
-    """User-configured OpenAI-compatible provider endpoint.
-
-    ``model_type`` selects which OpenAI API surface to call:
-      * ``"chat"``     -> POST /v1/chat/completions  (universal — works with
-        every OpenAI-compatible provider including g4f.space, OpenRouter,
-        Groq, Together, Ollama, vLLM, LM Studio, …). This is the default
-        because most third-party providers do NOT implement the newer
-        Responses API and would silently hang the SSE parser waiting for
-        a chunk that never arrives.
-      * ``"responses"`` -> POST /v1/responses        (OpenAI direct only).
-
-    ``tools_enabled`` controls whether the agent registers its tool suite
-    (workspace ops, code execution, RAG search, charts, ask_user, …) on
-    the model at all. Some providers (notably certain g4f / free models)
-    reject any request that includes a ``tools`` array via HTTP 403 —
-    toggling this off lets the user still chat in text-only mode.
-    """
-
-    base_url: str
-    api_key: str | None
-    model_name: str
-    model_type: Literal["chat", "responses"] = "chat"
-    tools_enabled: bool = True
-
-
-def _build_model_from_provider_config(cfg: ProviderConfig) -> Any:
-    """Build the right pydantic-ai model for a provider configuration.
-
-    Routes to :class:`OpenAIChatModel` (POST /v1/chat/completions) when
-    ``model_type == "chat"`` and :class:`OpenAIResponsesModel` (POST
-    /v1/responses) when ``model_type == "responses"``.
-
-    The Chat Completions path is wrapped with :func:`build_reasoning_aware_client`
-    so non-standard ``delta.reasoning_content`` fields (DeepSeek / Moonshot /
-    g4f) are extracted into a contextvar callback the frontend can render in
-    a separate "Reasoning" block.
-    """
-    resolved_key = cfg.api_key or "unset"
-
-    # Chat Completions — universal endpoint. Wrap with ReasoningAwareTransport
-    # which: (1) filters out empty-choices chunks (the usage-only chunk that
-    # crashes pydantic-ai's parser on some non-standard providers like
-    # g4f.space), and (2) extracts the non-standard ``delta.reasoning_content``
-    # field (DeepSeek / Moonshot / g4f) and emits it via a contextvar callback
-    # so the frontend can render it in a separate "Reasoning" block — distinct
-    # from OpenAI-native reasoning summaries that come through the ``Thinking``
-    # capability.
-    http_client = build_reasoning_aware_client(
-        base_url=cfg.base_url,
-        api_key=resolved_key,
-    )
-    provider = OpenAIProvider(
-        api_key=resolved_key,
-        base_url=cfg.base_url,
-        http_client=http_client,
-    )
-    if cfg.model_type == "responses":
-        return OpenAIResponsesModel(cfg.model_name, provider=provider)
-    return OpenAIChatModel(cfg.model_name, provider=provider)
-
-
 def _build_model(
     model_name: str,
     base_url: str | None = None,
     api_key: str | None = None,
-    model_type: Literal["chat", "responses"] = "chat",
 ) -> Any:
     """Build an OpenAI-compatible model client.
 
     If ``base_url`` + ``api_key`` are provided, route to the user's custom
-    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, g4f, …)
-    via :class:`OpenAIChatModel` by default — most third-party OpenAI-compatible
+    provider (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio, g4f.space,
+    …) via :class:`OpenAIChatModel` — most third-party OpenAI-compatible
     providers only support ``/v1/chat/completions``, not the newer Responses
-    API. The ``model_type`` argument lets the user opt into the Responses API
-    for OpenAI-direct (which is the only provider that implements it).
+    API.
+
+    For custom providers we wrap the underlying ``AsyncOpenAI`` client with
+    :class:`ReasoningAwareTransport` — an httpx transport that strips
+    non-standard ``reasoning_content`` / ``reasoning`` fields from streamed
+    chunks and drops no-op chunks. This keeps the OpenAI SDK / pydantic-ai
+    parser happy on providers (g4f.space, vLLM relays, DeepSeek) that emit
+    chain-of-thought fields or per-chunk ``usage`` blocks the spec doesn't
+    describe.
 
     For the default (no base_url), use :class:`OpenAIResponsesModel` against
     the real OpenAI API so we get reasoning summaries, native tools, etc.
@@ -158,14 +84,27 @@ def _build_model(
     resolved_key = api_key or settings.OPENAI_API_KEY
 
     if base_url:
-        return _build_model_from_provider_config(
-            ProviderConfig(
-                base_url=base_url,
-                api_key=api_key,
-                model_name=resolved_model,
-                model_type=model_type,
-            )
+        # Custom provider — use the chat-completions API. Most third-party
+        # OpenAI-compatible providers (OpenRouter, Groq, Together, Ollama,
+        # vLLM, LM Studio, g4f.space, …) only support /v1/chat/completions,
+        # not the newer Responses API.
+        #
+        # Wrap httpx with ReasoningAwareTransport so non-standard
+        # reasoning_content/reasoning fields and per-chunk usage blocks from
+        # vLLM-based relays don't confuse the OpenAI SDK / pydantic-ai parser.
+        from app.agents.reasoning_transport import build_reasoning_aware_client
+
+        from openai import AsyncOpenAI
+
+        http_client = build_reasoning_aware_client()
+        openai_client = AsyncOpenAI(
+            api_key=resolved_key or "unset",
+            base_url=base_url,
+            http_client=http_client,
+            max_retries=0,  # we let pydantic-ai's ModelRetry handle retries
         )
+        provider = OpenAIProvider(openai_client=openai_client)
+        return OpenAIChatModel(resolved_model, provider=provider)
 
     # Default OpenAI — use the Responses API.
     provider_kwargs: dict[str, Any] = {"api_key": resolved_key}
@@ -198,8 +137,6 @@ class AssistantAgent:
         todo_capability: "TodoCapability | None" = None,
         provider_base_url: str | None = None,
         provider_api_key: str | None = None,
-        provider_model_type: Literal["chat", "responses"] = "chat",
-        provider_tools_enabled: bool = True,
         user_skills_dir: Path | None = None,
         custom_tools: list[dict[str, Any]] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
@@ -208,17 +145,6 @@ class AssistantAgent:
         self.model_name = model_name or settings.AI_MODEL
         self.provider_base_url = provider_base_url
         self.provider_api_key = provider_api_key
-        # ``provider_model_type`` controls whether we hit
-        # POST /v1/chat/completions ("chat" — default, universal) or
-        # POST /v1/responses ("responses" — OpenAI-direct only). Most
-        # third-party providers (g4f.space, OpenRouter, Groq, …) only
-        # implement the chat-completions endpoint; routing them through
-        # OpenAIResponsesModel is the root cause of stuck-at-thinking.
-        self.provider_model_type = provider_model_type
-        # ``provider_tools_enabled`` lets the user disable tool registration
-        # entirely for providers that 403 on the ``tools`` array. Text-only
-        # chat still works — only tool calls are skipped.
-        self.provider_tools_enabled = provider_tools_enabled
         # ``temperature`` stays ``None`` when caller didn't set it — don't fall
         # back to settings.AI_TEMPERATURE here. Reasoning/o-series models
         # (gpt-5.5, o1, …) reject the parameter entirely, so we only forward
@@ -243,7 +169,6 @@ class AssistantAgent:
             self.model_name,
             base_url=self.provider_base_url,
             api_key=self.provider_api_key,
-            model_type=self.provider_model_type,
         )
 
         capabilities: list[Any] = [ReinjectSystemPrompt()]
@@ -276,11 +201,7 @@ class AssistantAgent:
         legacy_skills_dir = Path(__file__).parent.parent.parent / "skills"
         if legacy_skills_dir.exists():
             skills_dirs.append(str(legacy_skills_dir))
-        # When the user has explicitly disabled tools for this provider
-        # (provider_tools_enabled=False), skip SkillsToolset too — Skills
-        # register as a toolset and would re-introduce the ``tools`` array
-        # that the provider 403s on.
-        if self.provider_tools_enabled and skills_dirs:
+        if skills_dirs:
             try:
                 toolsets.append(SkillsToolset(directories=skills_dirs))
             except Exception:
@@ -288,19 +209,16 @@ class AssistantAgent:
 
         # MCP servers — spin up a pydantic-ai toolset per active server.
         # Failures are logged but don't break the chat (the agent just
-        # doesn't see that server's tools). Skipped entirely when
-        # provider_tools_enabled=False to keep the request body free of
-        # any ``tools`` array.
-        if self.provider_tools_enabled:
-            for srv in self.mcp_servers:
-                try:
-                    ts = _build_mcp_toolset(srv)
-                    if ts is not None:
-                        toolsets.append(ts)
-                except Exception:
-                    logger.warning(
-                        "Failed to wire MCP server %s", srv.get("name"), exc_info=True
-                    )
+        # doesn't see that server's tools).
+        for srv in self.mcp_servers:
+            try:
+                ts = _build_mcp_toolset(srv)
+                if ts is not None:
+                    toolsets.append(ts)
+            except Exception:
+                logger.warning(
+                    "Failed to wire MCP server %s", srv.get("name"), exc_info=True
+                )
 
         if self.todo_capability is not None:
             capabilities.append(self.todo_capability)
@@ -313,15 +231,8 @@ class AssistantAgent:
             toolsets=toolsets,
         )
 
-        # Tools (workspace ops, RAG, charts, ask_user, code execution, …)
-        # are only registered when provider_tools_enabled is True. Some
-        # providers (notably certain g4f / free models) reject any request
-        # that includes a ``tools`` array via HTTP 403 — skipping tool
-        # registration keeps the request body clean so chat still works
-        # (text-only mode).
-        if self.provider_tools_enabled:
-            self._register_tools(agent)
-            self._register_custom_tools(agent)
+        self._register_tools(agent)
+        self._register_custom_tools(agent)
 
         return agent
 
@@ -410,18 +321,10 @@ class AssistantAgent:
                     "User interaction is unavailable here; proceed with a reasonable "
                     "assumption and state it briefly."
                 )
-            # Coerce + validate. Many OpenAI-compatible providers (notably
-            # g4f and other free relays) serialize the ``questions`` array
-            # as a JSON string instead of a real JSON array, which fails
-            # Pydantic's list validation with "Input should be a valid array".
-            # ``parse_questions`` accepts both shapes (string OR list) and
-            # drops invalid items instead of crashing the whole turn.
-            #
-            # The ``Any`` type hint above is deliberate — it lets pydantic-ai
-            # forward whatever the model sent (string, list, dict) without
-            # rejecting it at the schema-validation layer, then we normalize
-            # here. Using ``list[QuestionItem]`` would 409 the request the
-            # moment a provider sends a JSON string.
+            # Coerce + validate. Many OpenAI-compatible providers serialize the
+            # array as a JSON string with leading whitespace, which fails Pydantic's
+            # list validation. parse_questions handles that and drops bad items
+            # instead of crashing the whole turn.
             items = parse_questions(questions)
             if not items:
                 return "No questions were provided."
@@ -620,108 +523,6 @@ class AssistantAgent:
             result = await ws_read_chat(ctx.deps.user_id or "", conversation_id)
             return _json.dumps(result)
 
-        # ----------------------------------------------------- slash command tools
-        # "sc" = "slash command". Let the AI collaboratively build /shortcuts
-        # with the user — e.g. "make a /research command that …". The new
-        # command appears in the user's slash palette on the next render.
-
-        @agent.tool
-        async def create_sc(ctx: RunContext[Deps], args: SCCreateArgs) -> str:
-            """Create a new slash command (shortcut) for the user.
-
-            "sc" stands for "slash command". Use this when the user asks you
-            to make a new /<name> shortcut that expands to a stored prompt.
-            The new command appears in the user's slash palette immediately.
-
-            Args:
-                args: {name, prompt, is_enabled?} — name is lowercase-with-hyphens,
-                    prompt is the full text the command expands to.
-            """
-            import json as _json
-            result = await sc_create(ctx.deps.user_id or "", args)
-            return _json.dumps(result)
-
-        @agent.tool
-        async def edit_sc(ctx: RunContext[Deps], args: SCEditArgs) -> str:
-            """Edit an existing slash command's name, prompt, or enabled flag.
-
-            Args:
-                args: {name, new_name?, new_prompt?, is_enabled?} — at least one
-                    optional field must be set. Only custom commands can be edited;
-                    built-in overrides accept is_enabled only.
-            """
-            import json as _json
-            result = await sc_edit(ctx.deps.user_id or "", args)
-            return _json.dumps(result)
-
-        @agent.tool
-        async def delete_sc(ctx: RunContext[Deps], args: SCDeleteArgs) -> str:
-            """Delete a slash command by name.
-
-            Args:
-                args: {name} — the /<name> of the command to delete.
-            """
-            import json as _json
-            result = await sc_delete(ctx.deps.user_id or "", args)
-            return _json.dumps(result)
-
-        @agent.tool
-        async def list_slash_commands(ctx: RunContext[Deps]) -> str:
-            """List the user's existing slash commands (so you can avoid
-            name collisions before calling create_sc, or find the right
-            command to edit/delete).
-            """
-            import json as _json
-            result = await sc_list(ctx.deps.user_id or "")
-            return _json.dumps(result)
-
-        # ----------------------------------------------------- env var tools
-        # Let the AI manage the user's environment variables. When the user
-        # has a Hopx API key set, every mutation also rewrites the .env file
-        # in their Hopx sandbox — the AI can then read_file(".env") to use
-        # those credentials when running code on the user's behalf.
-
-        @agent.tool
-        async def set_env(ctx: RunContext[Deps], args: SetEnvArgs) -> str:
-            """Create or update an environment variable for the user.
-
-            Use this when the user asks you to save a credential, API key, or
-            any config value the AI should reuse later. The value is encrypted
-            at rest (when is_secret=true) and synced to the user's Hopx
-            sandbox as a .env file so future code executions can read it.
-
-            Args:
-                args: {name, value, is_secret?} — name is UPPER_SNAKE_CASE,
-                    value is the raw string, is_secret (default true) controls
-                    whether the UI masks the value.
-            """
-            import json as _json
-            result = await env_set(ctx.deps.user_id or "", args)
-            return _json.dumps(result)
-
-        @agent.tool
-        async def delete_env(ctx: RunContext[Deps], args: DeleteEnvArgs) -> str:
-            """Delete an environment variable by name.
-
-            Args:
-                args: {name} — the UPPER_SNAKE_CASE name of the var to remove.
-            """
-            import json as _json
-            result = await env_delete(ctx.deps.user_id or "", args)
-            return _json.dumps(result)
-
-        @agent.tool
-        async def list_env(ctx: RunContext[Deps]) -> str:
-            """List the user's environment variables.
-
-            Secret values are masked; plain values are returned in full. Use
-            this to see what credentials the user has already saved before
-            asking them to re-supply one.
-            """
-            import json as _json
-            result = await env_list(ctx.deps.user_id or "")
-            return _json.dumps(result)
-
     def _register_custom_tools(self, agent: Agent[Deps, str]) -> None:
         """Register each user-defined custom tool on the agent.
 
@@ -861,8 +662,6 @@ def get_agent(
     todo_capability: "TodoCapability | None" = None,
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
-    provider_model_type: Literal["chat", "responses"] = "chat",
-    provider_tools_enabled: bool = True,
     system_prompt: str | None = None,
     user_skills_dir: Path | None = None,
     custom_tools: list[dict[str, Any]] | None = None,
@@ -875,8 +674,6 @@ def get_agent(
         todo_capability=todo_capability,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
-        provider_model_type=provider_model_type,
-        provider_tools_enabled=provider_tools_enabled,
         system_prompt=system_prompt,
         user_skills_dir=user_skills_dir,
         custom_tools=custom_tools,
